@@ -17,9 +17,17 @@ struct LineMetrics {
     int width;
     int tallestHeight;
     bool hasEmote;
+    bool hasPackGlyph; // a character drawn from the font packs (see graphics/fontpack/FontPacks.h)
 };
 
 size_t utf8CharLen(uint8_t c);
+
+// The code point of the UTF-8 character at s (at most len bytes); no validation (0xFFFD for a truncated sequence)
+uint32_t utf8CodePoint(const char *s, size_t len);
+
+// True for the characters of scripts written without spaces (CJK, kana, Hangul, fullwidth forms): a line can break
+// before any of them
+bool canBreakBefore(uint32_t cp);
 
 const Emote *findEmoteByLabel(const char *label, const Emote *emoteSet = emotes, int emoteCount = numEmotes);
 const Emote *findEmoteAt(const char *text, size_t textLen, size_t pos, size_t &matchLen, const Emote *emoteSet = emotes,
