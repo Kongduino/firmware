@@ -19,6 +19,7 @@
 #include "graphics/TimeFormatters.h"
 #include "graphics/draw/NotificationRenderer.h"
 #include "graphics/emotes.h"
+#include "graphics/fontpack/FontPacks.h"
 #include "main.h"
 #include "meshUtils.h"
 #include "modules/CannedMessageModule.h"
@@ -1037,32 +1038,49 @@ std::vector<std::string> generateLines(OLEDDisplay *display, const char *headerS
     }
 
     std::string line, word;
-    for (int i = 0; messageBuf[i]; ++i) {
-        char ch = messageBuf[i];
-        if ((unsigned char)messageBuf[i] == 0xE2 && (unsigned char)messageBuf[i + 1] == 0x80 &&
-            (unsigned char)messageBuf[i + 2] == 0x99) {
-            ch = '\''; // plain apostrophe
-            i += 2;    // skip over the extra UTF-8 bytes
-        }
-        if (ch == '\n') {
+    const size_t bufLen = strlen(messageBuf);
+    for (size_t i = 0; i < bufLen;) {
+        // One whole UTF-8 character at a time, so a line never ends inside a character
+        const size_t charLen = std::min(graphics::EmoteRenderer::utf8CharLen((uint8_t)messageBuf[i]), bufLen - i);
+        std::string ch(messageBuf + i, charLen);
+        i += charLen;
+        if (ch == "\xE2\x80\x99")
+            ch = "'"; // plain apostrophe
+        if (ch == "\n") {
             if (!word.empty())
                 line += word;
             if (!line.empty())
                 lines.push_back(line);
             line.clear();
             word.clear();
-        } else if (ch == ' ') {
+        } else if (ch == " ") {
             line += word + ' ';
             word.clear();
+        } else if (graphics::EmoteRenderer::canBreakBefore(graphics::EmoteRenderer::utf8CodePoint(ch.c_str(), ch.size()))) {
+            // Scripts written without spaces (CJK): every character is a word of its own
+            line += word;
+            word.clear();
+            std::string test = line + ch;
+            if (!line.empty() && graphics::UIRenderer::measureStringWithEmotes(display, test.c_str()) > textWidth) {
+                lines.push_back(line);
+                line = ch;
+            } else {
+                line = test;
+            }
         } else {
             word += ch;
             std::string test = line + word;
-            uint16_t strWidth = graphics::UIRenderer::measureStringWithEmotes(display, test.c_str());
-            if (strWidth > textWidth) {
-                if (!line.empty())
+            if (graphics::UIRenderer::measureStringWithEmotes(display, test.c_str()) > textWidth) {
+                // The word moves to the next line
+                if (!line.empty()) {
                     lines.push_back(line);
-                line = word;
-                word.clear();
+                    line.clear();
+                }
+                // A word wider than a whole line is cut before the character that doesn't fit
+                if (word.size() > ch.size() && graphics::UIRenderer::measureStringWithEmotes(display, word.c_str()) > textWidth) {
+                    lines.push_back(word.substr(0, word.size() - ch.size()));
+                    word = ch;
+                }
             }
         }
     }
@@ -1083,6 +1101,7 @@ std::vector<int> calculateLineHeights(const std::vector<std::string> &lines, con
     constexpr int BODY_LINE_LEADING = -4;   // default vertical leading for normal body lines
     constexpr int EMOTE_PADDING_ABOVE = 4;  // space above emote line (added to line above)
     constexpr int EMOTE_PADDING_BELOW = 3;  // space below emote line (added to emote line)
+    constexpr int PACK_PADDING_ABOVE = 2;   // space above a line with font pack glyphs (CJK is taller than Latin caps)
 
     std::vector<int> rowHeights;
     rowHeights.reserve(lines.size());
@@ -1101,9 +1120,13 @@ std::vector<int> calculateLineHeights(const std::vector<std::string> &lines, con
         const bool hasEmote = lineMetrics[idx].hasEmote;
         const bool nextHasEmote = (idx + 1 < lines.size()) && lineMetrics[idx + 1].hasEmote;
 
+        const bool nextHasPackGlyph = (idx + 1 < lines.size()) && lineMetrics[idx + 1].hasPackGlyph;
+
         if (isHeaderVec[idx]) {
             // Header line spacing
             lineHeight = baseHeight + HEADER_UNDERLINE_PIX + HEADER_UNDERLINE_GAP;
+            if (nextHasPackGlyph)
+                lineHeight += PACK_PADDING_ABOVE;
         } else {
             // Base spacing for normal lines
             int desiredBody = baseHeight + BODY_LINE_LEADING;
@@ -1115,6 +1138,13 @@ std::vector<int> calculateLineHeights(const std::vector<std::string> &lines, con
             } else {
                 // Regular line: no emote → standard spacing
                 lineHeight = desiredBody;
+#if HAS_FONTPACKS
+                // Glyphs from the font packs need their own line height, and room above them
+                if (lineMetrics[idx].hasPackGlyph)
+                    lineHeight = std::max(lineHeight, graphics::FontPacks::lineHeight());
+                else if (nextHasPackGlyph)
+                    lineHeight += PACK_PADDING_ABOVE;
+#endif
 
                 // If next line has an emote → add top padding *here*
                 if (nextHasEmote) {

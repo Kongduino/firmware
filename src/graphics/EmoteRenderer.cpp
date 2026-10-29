@@ -2,6 +2,7 @@
 #if HAS_SCREEN
 
 #include "graphics/EmoteRenderer.h"
+#include "graphics/fontpack/FontPacks.h"
 #include <algorithm>
 #include <cstring>
 
@@ -42,6 +43,31 @@ size_t utf8CharLen(uint8_t c)
     return 1;
 }
 
+uint32_t utf8CodePoint(const char *s, size_t len)
+{
+    const uint8_t c = static_cast<uint8_t>(s[0]);
+    const size_t n = utf8CharLen(c);
+    if (n > len)
+        return 0xFFFD;
+    if (n == 1)
+        return c;
+    uint32_t cp = c & (0x7F >> n);
+    for (size_t i = 1; i < n; i++)
+        cp = (cp << 6) | (static_cast<uint8_t>(s[i]) & 0x3F);
+    return cp;
+}
+
+bool canBreakBefore(uint32_t cp)
+{
+    return (cp >= 0x2E80 && cp <= 0x9FFF) || // CJK radicals, punctuation, kana, Bopomofo, ideographs
+           (cp >= 0xA960 && cp <= 0xA97F) || // Hangul jamo extended-A
+           (cp >= 0xAC00 && cp <= 0xD7FF) || // Hangul syllables, jamo extended-B
+           (cp >= 0xF900 && cp <= 0xFAFF) || // CJK compatibility ideographs
+           (cp >= 0xFE30 && cp <= 0xFE4F) || // CJK compatibility forms
+           (cp >= 0xFF00 && cp <= 0xFFEF) || // halfwidth and fullwidth forms
+           (cp >= 0x20000 && cp <= 0x3FFFF); // CJK ideographs, supplementary planes
+}
+
 // Bytes the UTF-8 char at s[pos] occupies, clamped to what actually remains. A truncated multi-byte
 // lead (e.g. a lone 0xF0) near the end otherwise makes a walker read past the buffer - the payload of
 // a TEXT message is opaque bytes, so such truncated sequences are attacker-reachable.
@@ -56,8 +82,28 @@ static inline bool isPossibleEmoteLead(uint8_t c)
     return c == 0xE2 || c == 0xF0;
 }
 
+// True when the character at s[pos] is drawn from the font packs (the built-in font doesn't have it)
+static inline bool isPackCharAt(const char *s, size_t pos, size_t len, uint32_t &cp, size_t &charLen)
+{
+#if HAS_FONTPACKS
+    if (static_cast<uint8_t>(s[pos]) < 0x80)
+        return false;
+    cp = FontPacks::decodeUtf8(s + pos, len - pos, charLen);
+    return FontPacks::handles(cp);
+#else
+    (void)s, (void)pos, (void)len, (void)cp, (void)charLen;
+    return false;
+#endif
+}
+
 static inline int getUtf8ChunkWidth(OLEDDisplay *display, const char *text, size_t len)
 {
+#if HAS_FONTPACKS
+    uint32_t cp;
+    size_t charLen;
+    if (isPackCharAt(text, 0, len, cp, charLen))
+        return FontPacks::advance(cp);
+#endif
     char chunk[5] = {0, 0, 0, 0, 0};
     if (len > 4)
         len = 4;
@@ -206,7 +252,7 @@ static LineMetrics analyzeLineInternal(OLEDDisplay *display, const char *line, s
                                        const Emote *emoteSet, int emoteCount, int emoteSpacing)
 {
     // Scan once to collect width and tallest emote for this line.
-    LineMetrics metrics{0, fallbackHeight, false};
+    LineMetrics metrics{0, fallbackHeight, false, false};
     if (!line)
         return metrics;
 
@@ -229,6 +275,10 @@ static LineMetrics analyzeLineInternal(OLEDDisplay *display, const char *line, s
         }
 
         const size_t charLen = utf8CharLenClamped(line, i, lineLen);
+        uint32_t cp;
+        size_t packLen;
+        if (isPackCharAt(line, i, lineLen, cp, packLen))
+            metrics.hasPackGlyph = true;
         if (display)
             metrics.width += getUtf8ChunkWidth(display, line + i, charLen);
         i += charLen;
@@ -264,8 +314,8 @@ int measureStringWithEmotes(OLEDDisplay *display, const char *line, const Emote 
     return analyzeLine(display, line, 0, emoteSet, emoteCount, emoteSpacing).width;
 }
 
-static int appendTextSpanAndMeasure(OLEDDisplay *display, int cursorX, int fontY, const char *text, size_t len, bool draw,
-                                    bool fauxBold)
+static int appendTextSpanAndMeasure(OLEDDisplay *display, int cursorX, int fontY, int fontHeight, const char *text, size_t len,
+                                    bool draw, bool fauxBold)
 {
     // Draw plain-text runs in chunks so UTF-8 stays intact.
     if (!text || len == 0)
@@ -274,8 +324,32 @@ static int appendTextSpanAndMeasure(OLEDDisplay *display, int cursorX, int fontY
     char chunk[33];
     size_t pos = 0;
     while (pos < len) {
+#if HAS_FONTPACKS
+        // A character the built-in font doesn't have comes from the font packs
+        uint32_t cp;
+        size_t packLen;
+        if (isPackCharAt(text, pos, len, cp, packLen)) {
+            if (draw) {
+                if (fauxBold)
+                    FontPacks::draw(display, cursorX + 1, fontY, fontHeight, cp);
+                cursorX += FontPacks::draw(display, cursorX, fontY, fontHeight, cp);
+            } else {
+                cursorX += FontPacks::advance(cp);
+            }
+            pos += packLen;
+            continue;
+        }
+#else
+        (void)fontHeight;
+#endif
+
         size_t chunkLen = 0;
         while (pos + chunkLen < len) {
+#if HAS_FONTPACKS
+            // End the chunk before a character from the packs
+            if (chunkLen > 0 && isPackCharAt(text, pos + chunkLen, len, cp, packLen))
+                break;
+#endif
             const size_t charLen = utf8CharLenClamped(text, pos + chunkLen, len);
             if (chunkLen + charLen >= sizeof(chunk))
                 break;
@@ -442,7 +516,7 @@ void drawStringWithEmotes(OLEDDisplay *display, int x, int y, const char *line, 
         if (next == i)
             next += utf8CharLenClamped(line, i, lineLen);
 
-        cursorX = appendTextSpanAndMeasure(display, cursorX, fontY, line + i, next - i, true, fauxBold && inBold);
+        cursorX = appendTextSpanAndMeasure(display, cursorX, fontY, fontHeight, line + i, next - i, true, fauxBold && inBold);
         i = next;
     }
 }

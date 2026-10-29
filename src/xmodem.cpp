@@ -50,6 +50,7 @@
 
 #include "xmodem.h"
 #include "SPILock.h"
+#include "graphics/fontpack/FontPacks.h"
 #include <cstring>
 
 #ifdef FSCom
@@ -155,6 +156,11 @@ void XModemAdapter::handlePacket(meshtastic_XModem xmodemPacket)
             if (xmodemPacket.control == meshtastic_XModem_Control_SOH) { // Receive this file and put to Flash
                 // FILE_O_WRITE on Adafruit_LittleFS is append, not truncate - remove first.
                 spiLock->lock();
+#if HAS_FONTPACKS
+                // Font packs go to their own directory, which may not exist yet
+                if (graphics::FontPacks::isPackPath(filename))
+                    graphics::FontPacks::ensureDirLocked();
+#endif
                 if (FSCom.exists(filename))
                     FSCom.remove(filename);
                 file = FSCom.open(filename, FILE_O_WRITE);
@@ -236,6 +242,11 @@ void XModemAdapter::handlePacket(meshtastic_XModem xmodemPacket)
         file.close();
         spiLock->unlock();
         isReceiving = false;
+#if HAS_FONTPACKS
+        // A new font pack is used without a reboot
+        if (graphics::FontPacks::isPackPath(filename))
+            graphics::FontPacks::requestReload();
+#endif
         break;
     case meshtastic_XModem_Control_CAN:
         // Cancel transmission and remove file
