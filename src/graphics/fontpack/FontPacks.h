@@ -30,10 +30,10 @@ constexpr const char *kFontDir = "/fonts";
 /// True when at least one valid pack is installed. The first call loads the packs from kFontDir.
 bool available();
 
-/// Drops the loaded packs and loads them again (after a pack was installed or removed). Screen thread only.
+/// Drops the loaded packs; they are loaded again at their next use
 void reload();
 
-/// Asks for a reload at the next use of the packs, from any thread (the file transfer, when a pack arrives)
+/// Asks for a reload at the next use of the packs, from any thread
 void requestReload();
 
 /// True for a path where a pack is installed: kFontDir/<name>.mfp
@@ -41,6 +41,16 @@ bool isPackPath(const char *path);
 
 /// Creates kFontDir when it doesn't exist; the caller holds the SPI lock
 void ensureDirLocked();
+
+/// Where a pack is received before it is installed: its path with ".part" added (the loader ignores it)
+void partPath(const char *packPath, char *out, size_t outSize);
+
+/// Installs a received pack: checks the partial file (structure and CRC), then puts it in place of the pack of that
+/// name, which can be in use. A pack that fails the check is deleted. Any thread except the screen's
+bool install(const char *partPath, const char *packPath);
+
+/// Removes an installed pack, which can be in use. Any thread except the screen's
+bool remove(const char *packPath);
 
 /// True when the built-in fonts draw this code point themselves (ASCII, Latin-1, and the script of a language build
 /// such as OLED_RU); the packs are only used for the others
