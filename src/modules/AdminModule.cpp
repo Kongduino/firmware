@@ -35,6 +35,7 @@
 #include "MessageStore.h"
 #include "RadioInterface.h"
 #include "TypeConversions.h"
+#include "graphics/fontpack/FontPacks.h"
 #include "mesh/AdminKeys.h"
 #include "mesh/RadioLibInterface.h"
 #ifdef MESHTASTIC_PHONEAPI_ACCESS_CONTROL
@@ -637,6 +638,13 @@ bool AdminModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshta
     case meshtastic_AdminMessage_delete_file_request_tag: {
         LOG_DEBUG("Client requests delete file: %s", r->delete_file_request);
 
+#if HAS_FONTPACKS
+        // A font pack can be in use: the packs are closed first
+        if (graphics::FontPacks::isPackPath(r->delete_file_request)) {
+            graphics::FontPacks::remove(r->delete_file_request);
+            break;
+        }
+#endif
 #ifdef FSCom
         spiLock->lock();
         if (FSCom.remove(r->delete_file_request)) {
