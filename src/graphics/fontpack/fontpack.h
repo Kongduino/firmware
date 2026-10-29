@@ -1,6 +1,6 @@
-// Meshtastic Font Pack (.mfp) reader, see SPEC.md. Plain C99, no allocation: the pack stays in its
-// storage and every lookup reads it through the read callback. Every offset is checked, so a corrupt
-// or hostile pack gives missing glyphs, never an out-of-bounds read.
+// Meshtastic Font Pack (.mfp) reader, format version 2 (see SPEC.md). Plain C99, no allocation: the pack stays in its
+// storage and every lookup reads it through the read callback. Every offset is checked, so a corrupt or hostile pack
+// gives missing glyphs, never an out-of-bounds read.
 #pragma once
 
 #include <stdbool.h>
@@ -30,14 +30,22 @@ typedef struct {
     uint8_t line_height;
     uint8_t baseline;
     uint8_t max_advance;
-    uint16_t range_count;
+    uint8_t plane_count;
+    uint8_t metric_index_size;
+    uint16_t metrics_count;
     uint32_t glyph_count;
+    uint32_t range_count;
+    uint32_t planes_offset;
     uint32_t ranges_offset;
+    uint32_t range_checkpoints_offset;
+    uint32_t metrics_offset;
     uint32_t glyphs_offset;
+    uint32_t glyph_checkpoints_offset;
     uint32_t bitmaps_offset;
     uint32_t bitmaps_size;
     uint32_t meta_offset;
     uint32_t meta_size;
+    const uint8_t *metrics; // the metrics table in RAM (fp_load_metrics), or NULL to read it from the storage
 } fp_pack;
 
 typedef struct {
@@ -54,6 +62,13 @@ fp_result fp_open(fp_pack *pack, fp_read_fn read, void *ctx, uint32_t store_size
 
 // Checks the CRC (reads the whole pack, 256 bytes at a time)
 fp_result fp_verify(const fp_pack *pack);
+
+// The bytes of the metrics table (5 per entry)
+uint32_t fp_metrics_size(const fp_pack *pack);
+
+// Copies the metrics table into buf (fp_metrics_size bytes), which the pack then uses instead of reading the storage:
+// a lookup adds up the metrics of up to 63 glyphs. buf must outlive the pack
+bool fp_load_metrics(fp_pack *pack, uint8_t *buf, uint32_t buf_size);
 
 // The glyph of a code point; false when the pack doesn't have it
 bool fp_find(const fp_pack *pack, uint32_t cp, fp_glyph *glyph);
