@@ -21,6 +21,11 @@
 #ifndef FONTPACK_CACHE_BITMAP
 #define FONTPACK_CACHE_BITMAP 32
 #endif
+// A pack's metrics table (5 bytes per distinct glyph metrics) is kept in RAM up to this size; larger ones are read from
+// the pack
+#ifndef FONTPACK_MAX_METRICS_RAM
+#define FONTPACK_MAX_METRICS_RAM 4096
+#endif
 // Larger glyphs are read on demand into a stack buffer this size (48x48); glyphs larger still are drawn as a box
 #define FONTPACK_MAX_BITMAP 288
 
@@ -35,6 +40,8 @@ namespace
 struct Pack {
     FileFontStore store;
     fp_pack pack;
+    uint8_t *metrics = nullptr; // the pack's metrics table in RAM, when small enough
+    ~Pack() { free(metrics); }
 };
 
 // Plain data: the cache is allocated with calloc (a failed allocation must not abort the device)
@@ -129,8 +136,17 @@ void loadPacks()
             LOG_WARN("FontPacks: %s not used: %s", path, resultName(r));
             continue;
         }
-        LOG_INFO("FontPacks: %s: %u glyphs, %u px lines, checked in %u ms", path, (unsigned)p->pack.glyph_count,
-                 (unsigned)p->pack.line_height, (unsigned)(millis() - start));
+        // Each lookup adds up the metrics of up to 63 glyphs: from RAM, not from the file, when it can
+        const uint32_t metricsSize = fp_metrics_size(&p->pack);
+        if (metricsSize <= FONTPACK_MAX_METRICS_RAM) {
+            p->metrics = static_cast<uint8_t *>(malloc(metricsSize));
+            if (p->metrics && !fp_load_metrics(&p->pack, p->metrics, metricsSize)) {
+                free(p->metrics);
+                p->metrics = nullptr;
+            }
+        }
+        LOG_INFO("FontPacks: %s: %u glyphs, %u px lines, metrics %s, checked in %u ms", path, (unsigned)p->pack.glyph_count,
+                 (unsigned)p->pack.line_height, p->metrics ? "in RAM" : "read from the pack", (unsigned)(millis() - start));
         if (p->pack.line_height > maxLineHeight)
             maxLineHeight = p->pack.line_height;
         packs[packCount++] = std::move(p);
