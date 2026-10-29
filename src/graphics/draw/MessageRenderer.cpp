@@ -19,6 +19,7 @@
 #include "graphics/TimeFormatters.h"
 #include "graphics/draw/NotificationRenderer.h"
 #include "graphics/emotes.h"
+#include "graphics/fontpack/FontPacks.h"
 #include "main.h"
 #include "meshUtils.h"
 #include "modules/CannedMessageModule.h"
@@ -1047,11 +1048,17 @@ std::vector<std::string> generateLines(OLEDDisplay *display, const char *headerS
     const size_t len = strlen(messageBuf);
     std::string line, word;
     size_t pos = 0;
+    bool breakAfterWord = false; // the word is a character of a script written without spaces
     while (pos < len) {
         // Advance one whole unit (emote or UTF-8 char) so a break never lands inside one
         size_t unitLen = 0;
         if ((unsigned char)messageBuf[pos] == 0xE2 && (unsigned char)messageBuf[pos + 1] == 0x80 &&
             (unsigned char)messageBuf[pos + 2] == 0x99) {
+            if (breakAfterWord) {
+                line += word;
+                word.clear();
+                breakAfterWord = false;
+            }
             word += '\''; // U+2019 right single quote -> plain apostrophe
             pos += 3;
             unitLen = 1;
@@ -1072,6 +1079,14 @@ std::vector<std::string> generateLines(OLEDDisplay *display, const char *headerS
             }
             if (!graphics::EmoteRenderer::findEmoteAt(messageBuf, len, pos, unitLen))
                 unitLen = std::min(graphics::EmoteRenderer::utf8CharLen((uint8_t)ch), len - pos);
+            // Scripts written without spaces (CJK): a line can break before and after each of their characters
+            const bool breakable =
+                graphics::EmoteRenderer::canBreakBefore(graphics::EmoteRenderer::utf8CodePoint(messageBuf + pos, unitLen));
+            if (breakable || breakAfterWord) {
+                line += word;
+                word.clear();
+            }
+            breakAfterWord = breakable;
             word.append(messageBuf + pos, unitLen);
             pos += unitLen;
         }
@@ -1102,6 +1117,7 @@ std::vector<int> calculateLineHeights(const std::vector<std::string> &lines, con
     constexpr int BODY_LINE_LEADING = -4;   // default vertical leading for normal body lines
     constexpr int EMOTE_PADDING_ABOVE = 4;  // space above emote line (added to line above)
     constexpr int EMOTE_PADDING_BELOW = 3;  // space below emote line (added to emote line)
+    constexpr int PACK_PADDING_ABOVE = 2;   // space above a line with font pack glyphs (CJK is taller than Latin caps)
 
     std::vector<int> rowHeights;
     rowHeights.reserve(lines.size());
@@ -1120,9 +1136,13 @@ std::vector<int> calculateLineHeights(const std::vector<std::string> &lines, con
         const bool hasEmote = lineMetrics[idx].hasEmote;
         const bool nextHasEmote = (idx + 1 < lines.size()) && lineMetrics[idx + 1].hasEmote;
 
+        const bool nextHasPackGlyph = (idx + 1 < lines.size()) && lineMetrics[idx + 1].hasPackGlyph;
+
         if (isHeaderVec[idx]) {
             // Header line spacing
             lineHeight = baseHeight + HEADER_UNDERLINE_PIX + HEADER_UNDERLINE_GAP;
+            if (nextHasPackGlyph)
+                lineHeight += PACK_PADDING_ABOVE;
         } else {
             // Base spacing for normal lines
             int desiredBody = baseHeight + BODY_LINE_LEADING;
@@ -1134,6 +1154,13 @@ std::vector<int> calculateLineHeights(const std::vector<std::string> &lines, con
             } else {
                 // Regular line: no emote → standard spacing
                 lineHeight = desiredBody;
+#if HAS_FONTPACKS
+                // Glyphs from the font packs need their own line height, and room above them
+                if (lineMetrics[idx].hasPackGlyph)
+                    lineHeight = std::max(lineHeight, graphics::FontPacks::lineHeight());
+                else if (nextHasPackGlyph)
+                    lineHeight += PACK_PADDING_ABOVE;
+#endif
 
                 // If next line has an emote → add top padding *here*
                 if (nextHasEmote) {
