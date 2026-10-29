@@ -60,6 +60,14 @@ void clearEntry(CacheEntry &e, uint32_t cp)
     e.packIndex = -1;
 }
 
+// Guards the packs and the cache: the screen thread draws while the API thread installs or removes packs. Taken before
+// the SPI lock (the store reads take it)
+concurrency::Lock &packLock()
+{
+    static concurrency::Lock lock;
+    return lock;
+}
+
 std::unique_ptr<Pack> packs[FONTPACK_MAX_PACKS];
 int packCount = 0;
 bool loaded = false;
@@ -128,10 +136,8 @@ void loadPacks()
             LOG_WARN("FontPacks: can't open %s", path);
             continue;
         }
-        const uint32_t start = millis();
+        // The CRC was checked at install (install()); the reader checks every offset it reads
         fp_result r = fp_open(&p->pack, storeRead, &p->store, p->store.size());
-        if (r == FP_OK)
-            r = fp_verify(&p->pack);
         if (r != FP_OK) {
             LOG_WARN("FontPacks: %s not used: %s", path, resultName(r));
             continue;
@@ -145,8 +151,8 @@ void loadPacks()
                 p->metrics = nullptr;
             }
         }
-        LOG_INFO("FontPacks: %s: %u glyphs, %u px lines, metrics %s, checked in %u ms", path, (unsigned)p->pack.glyph_count,
-                 (unsigned)p->pack.line_height, p->metrics ? "in RAM" : "read from the pack", (unsigned)(millis() - start));
+        LOG_INFO("FontPacks: %s: %u glyphs, %u px lines, metrics %s", path, (unsigned)p->pack.glyph_count,
+                 (unsigned)p->pack.line_height, p->metrics ? "in RAM" : "read from the pack");
         if (p->pack.line_height > maxLineHeight)
             maxLineHeight = p->pack.line_height;
         packs[packCount++] = std::move(p);
@@ -191,22 +197,40 @@ int tofuWidth()
     return maxLineHeight > 0 ? maxLineHeight * 2 / 3 : 8;
 }
 
-} // namespace
+/// Closes the packs (their files) and frees the cache; they are loaded again at their next use. Pack lock held
+void closePacks()
+{
+    for (auto &p : packs)
+        p.reset();
+    packCount = 0;
+    maxLineHeight = 0;
+    free(cache);
+    cache = nullptr;
+    loaded = false;
+}
 
-bool available()
+/// Loads the packs when needed. Pack lock held
+bool ensureLoaded()
 {
     if (reloadRequested.exchange(false))
-        reload();
-    else if (!loaded)
+        closePacks();
+    if (!loaded)
         loadPacks();
     return packCount > 0;
 }
 
+} // namespace
+
+bool available()
+{
+    concurrency::LockGuard g(&packLock());
+    return ensureLoaded();
+}
+
 void reload()
 {
-    for (auto &p : packs)
-        p.reset();
-    loadPacks();
+    concurrency::LockGuard g(&packLock());
+    closePacks();
 }
 
 void requestReload()
@@ -225,6 +249,61 @@ void ensureDirLocked()
 {
     if (!FSCom.exists(kFontDir))
         FSCom.mkdir(kFontDir);
+}
+
+void partPath(const char *packPath, char *out, size_t outSize)
+{
+    snprintf(out, outSize, "%s.part", packPath);
+}
+
+bool install(const char *partPath, const char *packPath)
+{
+    // Check the received file before anything else changes: the packs in use stay as they are if it fails
+    fp_result r;
+    {
+        FileFontStore store;
+        if (!store.open(partPath)) {
+            LOG_WARN("FontPacks: can't open %s", partPath);
+            return false;
+        }
+        fp_pack pack;
+        const uint32_t start = millis();
+        r = fp_open(&pack, storeRead, &store, store.size());
+        if (r == FP_OK)
+            r = fp_verify(&pack);
+        LOG_INFO("FontPacks: %s checked in %u ms: %s", partPath, (unsigned)(millis() - start), resultName(r));
+    }
+    if (r != FP_OK) {
+        concurrency::LockGuard s(spiLock);
+        FSCom.remove(partPath);
+        return false;
+    }
+
+    // Close the packs (one may be the pack being replaced), then put the new one in place
+    concurrency::LockGuard g(&packLock());
+    closePacks();
+    bool ok;
+    {
+        concurrency::LockGuard s(spiLock);
+        if (FSCom.exists(packPath))
+            FSCom.remove(packPath);
+        ok = FSCom.rename(partPath, packPath);
+    }
+    LOG_INFO("FontPacks: %s %s", packPath, ok ? "installed" : "not installed (rename failed)");
+    return ok;
+}
+
+bool remove(const char *packPath)
+{
+    concurrency::LockGuard g(&packLock());
+    closePacks();
+    bool ok;
+    {
+        concurrency::LockGuard s(spiLock);
+        ok = FSCom.remove(packPath);
+    }
+    LOG_INFO("FontPacks: %s %s", packPath, ok ? "removed" : "not removed");
+    return ok;
 }
 
 bool builtinCovers(uint32_t cp)
@@ -248,7 +327,8 @@ bool builtinCovers(uint32_t cp)
 
 int advance(uint32_t cp)
 {
-    if (!available())
+    concurrency::LockGuard g(&packLock());
+    if (!ensureLoaded())
         return 0;
     const CacheEntry &e = lookup(cp);
     return e.packIndex >= 0 ? e.glyph.advance : tofuWidth();
@@ -256,12 +336,14 @@ int advance(uint32_t cp)
 
 int lineHeight()
 {
-    return available() ? maxLineHeight : 0;
+    concurrency::LockGuard g(&packLock());
+    return ensureLoaded() ? maxLineHeight : 0;
 }
 
 int draw(OLEDDisplay *display, int x, int y, int fontHeight, uint32_t cp)
 {
-    if (!available())
+    concurrency::LockGuard g(&packLock());
+    if (!ensureLoaded())
         return 0;
     const CacheEntry &e = lookup(cp);
     // The pack's line box, centred on the built-in font's line

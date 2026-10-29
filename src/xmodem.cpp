@@ -51,11 +51,25 @@
 #include "xmodem.h"
 #include "SPILock.h"
 #include "graphics/fontpack/FontPacks.h"
+#include <cstdio>
 #include <cstring>
 
 #ifdef FSCom
 
 XModemAdapter xModem;
+
+// The file a received file is written to: a font pack goes to a partial file first (installed at the end of the
+// transfer), any other file to its own name
+static void receivePath(const char *filename, char *out, size_t outSize)
+{
+#if HAS_FONTPACKS
+    if (graphics::FontPacks::isPackPath(filename)) {
+        graphics::FontPacks::partPath(filename, out, outSize);
+        return;
+    }
+#endif
+    snprintf(out, outSize, "%s", filename);
+}
 
 XModemAdapter::XModemAdapter() {}
 
@@ -140,6 +154,19 @@ void XModemAdapter::handlePacket(meshtastic_XModem xmodemPacket)
     switch (xmodemPacket.control) {
     case meshtastic_XModem_Control_SOH:
     case meshtastic_XModem_Control_STX:
+        if (xmodemPacket.seq == 0 && isReceiving && packetno != 0) {
+            // A new transfer while one is in progress: the old one was interrupted (its client is gone). Abandon it,
+            // or every new transfer would be refused until a reboot. (Packet 0 is data only when the 16-bit packet
+            // number has wrapped, after 8 MB: packetno is then 0.)
+            LOG_WARN("XModem: abandon the interrupted transfer of %s", filename);
+            char path[sizeof(filename) + 8];
+            receivePath(filename, path, sizeof(path));
+            spiLock->lock();
+            file.close();
+            FSCom.remove(path);
+            spiLock->unlock();
+            isReceiving = false;
+        }
         if ((xmodemPacket.seq == 0) && !isReceiving && !isTransmitting) {
             // NULL packet has the destination filename
             strncpy(filename, (const char *)xmodemPacket.buffer.bytes, sizeof(filename) - 1);
@@ -155,15 +182,17 @@ void XModemAdapter::handlePacket(meshtastic_XModem xmodemPacket)
 
             if (xmodemPacket.control == meshtastic_XModem_Control_SOH) { // Receive this file and put to Flash
                 // FILE_O_WRITE on Adafruit_LittleFS is append, not truncate - remove first.
+                char path[sizeof(filename) + 8];
+                receivePath(filename, path, sizeof(path));
                 spiLock->lock();
 #if HAS_FONTPACKS
                 // Font packs go to their own directory, which may not exist yet
                 if (graphics::FontPacks::isPackPath(filename))
                     graphics::FontPacks::ensureDirLocked();
 #endif
-                if (FSCom.exists(filename))
-                    FSCom.remove(filename);
-                file = FSCom.open(filename, FILE_O_WRITE);
+                if (FSCom.exists(path))
+                    FSCom.remove(path);
+                file = FSCom.open(path, FILE_O_WRITE);
                 spiLock->unlock();
                 if (file) {
                     LOG_INFO("XModem: receiving %s", filename);
@@ -236,29 +265,42 @@ void XModemAdapter::handlePacket(meshtastic_XModem xmodemPacket)
         break;
     case meshtastic_XModem_Control_EOT:
         // End of transmission
+#if HAS_FONTPACKS
+        if (isReceiving && graphics::FontPacks::isPackPath(filename)) {
+            // A font pack is checked and installed (in place of the one in use) before the transfer is acknowledged
+            spiLock->lock();
+            file.flush();
+            file.close();
+            spiLock->unlock();
+            isReceiving = false;
+            char part[sizeof(filename) + 8];
+            graphics::FontPacks::partPath(filename, part, sizeof(part));
+            sendControl(graphics::FontPacks::install(part, filename) ? meshtastic_XModem_Control_ACK
+                                                                      : meshtastic_XModem_Control_NAK);
+            break;
+        }
+#endif
         sendControl(meshtastic_XModem_Control_ACK);
         spiLock->lock();
         file.flush();
         file.close();
         spiLock->unlock();
         isReceiving = false;
-#if HAS_FONTPACKS
-        // A new font pack is used without a reboot
-        if (graphics::FontPacks::isPackPath(filename))
-            graphics::FontPacks::requestReload();
-#endif
         break;
-    case meshtastic_XModem_Control_CAN:
+    case meshtastic_XModem_Control_CAN: {
         // Cancel transmission and remove file
         sendControl(meshtastic_XModem_Control_ACK);
+        char path[sizeof(filename) + 8];
+        receivePath(filename, path, sizeof(path));
         spiLock->lock();
         file.flush();
         file.close();
 
-        FSCom.remove(filename);
+        FSCom.remove(path);
         spiLock->unlock();
         isReceiving = false;
         break;
+    }
     case meshtastic_XModem_Control_ACK:
         // Acknowledge Send the next packet
         if (isTransmitting) {
