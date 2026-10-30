@@ -86,9 +86,21 @@ int maxLineHeight = 0;
 // Allocated only when a pack is installed: no RAM is used otherwise
 CacheEntry *cache = nullptr;
 
+// Set when a store read fails: a lookup that saw one isn't cached (the glyph may well exist)
+bool readFailed = false;
+bool readErrorLogged = false;
+
 bool storeRead(void *ctx, uint32_t off, void *buf, uint32_t len)
 {
-    return static_cast<FontStore *>(ctx)->read(off, buf, len);
+    if (static_cast<FontStore *>(ctx)->read(off, buf, len))
+        return true;
+    readFailed = true;
+    if (!readErrorLogged) {
+        readErrorLogged = true;
+        LOG_WARN("FontPacks: read error at %u (%u bytes): glyphs drawn as boxes until it reads again", (unsigned)off,
+                 (unsigned)len);
+    }
+    return false;
 }
 
 const char *resultName(fp_result r)
@@ -120,7 +132,7 @@ bool endsWith(const char *s, const char *suffix)
 FlashSlots *slots()
 {
 #if defined(FONTPACK_FLASH_SLOTS)
-    if (!fontPackFlash())
+    if (!fontPackFlash() || !fontPackFlash()->present())
         return nullptr;
     static FlashSlots s(*fontPackFlash(), FONTPACK_FLASH_BASE, FONTPACK_FLASH_SLOT_SIZE, FONTPACK_FLASH_SLOTS);
     return &s;
@@ -250,6 +262,7 @@ CacheEntry &lookup(uint32_t cp)
         return e;
     clearEntry(e, cp);
     touchFlash();
+    readFailed = false;
     for (int i = 0; i < packCount; i++) {
         if (fp_find(&packs[i]->pack, cp, &e.glyph)) {
             e.packIndex = i;
@@ -257,6 +270,12 @@ CacheEntry &lookup(uint32_t cp)
                 e.bitmapCached = fp_read_bitmap(&packs[i]->pack, &e.glyph, e.bitmap, sizeof(e.bitmap));
             break;
         }
+    }
+    // A read error: use the entry for this draw (a box), but look the code point up again next time
+    if (readFailed) {
+        e.cp = UINT32_MAX;
+        if (e.packIndex >= 0 && !e.bitmapCached)
+            e.packIndex = -1;
     }
     return e;
 }

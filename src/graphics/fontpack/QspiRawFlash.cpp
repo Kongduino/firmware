@@ -1,5 +1,6 @@
-// Font pack storage in an nRF52840's QSPI NOR flash, for boards that define FONTPACK_FLASH_QSPI (and PIN_QSPI_*) along
-// with the slot layout FONTPACK_FLASH_BASE, FONTPACK_FLASH_SLOT_SIZE and FONTPACK_FLASH_SLOTS.
+// Font pack storage in a NOR flash on an nRF52840's QSPI pins, for boards that define FONTPACK_FLASH_QSPI (and PIN_QSPI_*)
+// along with the slot layout FONTPACK_FLASH_BASE, FONTPACK_FLASH_SLOT_SIZE and FONTPACK_FLASH_SLOTS. Single-line commands
+// only, so a chip wired as plain SPI (IO0 = MOSI, IO1 = MISO) works too: the RAK15001 on a RAK4631.
 #include "graphics/fontpack/FontPacks.h"
 
 #if HAS_FONTPACKS && defined(ARCH_NRF52) && defined(FONTPACK_FLASH_QSPI)
@@ -17,6 +18,11 @@
 
 #ifndef FONTPACK_FLASH_QSPI_SIZE
 #define FONTPACK_FLASH_QSPI_SIZE (4UL * 1024 * 1024)
+#endif
+// FONTPACK_FLASH_POWER_PIN: a pin that is HIGH while the chip is powered, for a chip on a switched rail (WisBlock 3V3_S)
+// The QSPI clock: 32 MHz divided by this (NRF_QSPI_FREQ_DIV2: 16 MHz)
+#ifndef FONTPACK_FLASH_QSPI_FREQ
+#define FONTPACK_FLASH_QSPI_FREQ NRF_QSPI_FREQ_DIV2
 #endif
 
 namespace graphics
@@ -40,6 +46,15 @@ constexpr uint32_t BUSY_TIMEOUT_MS = 1000;
 class QspiRawFlash : public RawFlash
 {
   public:
+    bool present() override
+    {
+        if (!probed) {
+            probed = true;
+            isPresent = wake();
+        }
+        return isPresent;
+    }
+
     uint32_t size() const override { return FONTPACK_FLASH_QSPI_SIZE; }
     uint32_t eraseSize() const override { return SECTOR_SIZE; }
 
@@ -97,16 +112,16 @@ class QspiRawFlash : public RawFlash
         if (!active)
             return;
         command(CMD_DEEP_POWER_DOWN, nullptr, 0, nullptr, 0);
-        nrfx_qspi_uninit();
-        // nRF52840 anomaly 122: the QSPI keeps drawing current after it is disabled
-        *(volatile uint32_t *)0x40029054UL = 1;
-        active = false;
+        release();
     }
 
   private:
     uint32_t bounce[PAGE_SIZE / 4]; // word-aligned, in RAM
     bool active = false;
     bool checked = false;
+    bool probed = false, isPresent = false;
+    bool absent = false;   // no chip answered: never start the QSPI again
+    uint8_t jedec[3] = {}; // the ID read at the first start, checked at every wake
 
     /// A custom instruction: opcode, then tx bytes, then rx bytes (at most 8 in all)
     bool command(uint8_t opcode, const uint8_t *tx, uint8_t txLen, uint8_t *rx, uint8_t rxLen)
@@ -138,32 +153,75 @@ class QspiRawFlash : public RawFlash
         return true;
     }
 
+    /// Releases the QSPI pins, without a command: the chip lost its power
+    void release()
+    {
+        if (!active)
+            return;
+        nrfx_qspi_uninit();
+        // nRF52840 anomaly 122: the QSPI keeps drawing current after it is disabled
+        *(volatile uint32_t *)0x40029054UL = 1;
+        active = false;
+    }
+
     /// Starts the QSPI and wakes the chip from deep power-down, if needed
     bool wake()
     {
+#ifdef FONTPACK_FLASH_POWER_PIN
+        // The rail is off (the GPS sleeps): driving the pins would feed the unpowered chip through them
+        if (digitalRead(FONTPACK_FLASH_POWER_PIN) == LOW) {
+            release();
+            return false;
+        }
+#endif
         if (active)
             return true;
+        if (absent)
+            return false;
         auto pin = [](uint32_t arduinoPin) { return static_cast<uint8_t>(g_ADigitalPinMap[arduinoPin]); };
         nrfx_qspi_config_t cfg = NRFX_QSPI_DEFAULT_CONFIG(pin(PIN_QSPI_SCK), pin(PIN_QSPI_CS), pin(PIN_QSPI_IO0),
                                                           pin(PIN_QSPI_IO1), pin(PIN_QSPI_IO2), pin(PIN_QSPI_IO3));
-        // Single-line read and page program: no quad-enable bit needed. 16 MHz
+        // Single-line read and page program: no quad-enable bit needed
         cfg.prot_if.readoc = NRF_QSPI_READOC_FASTREAD;
         cfg.prot_if.writeoc = NRF_QSPI_WRITEOC_PP;
-        cfg.phy_if.sck_freq = NRF_QSPI_FREQ_DIV2;
+        cfg.phy_if.sck_freq = FONTPACK_FLASH_QSPI_FREQ;
         if (nrfx_qspi_init(&cfg, nullptr, nullptr) != NRFX_SUCCESS) {
             LOG_WARN("FontPacks: QSPI init failed");
             return false;
         }
         active = true;
+        if (checked) {
+            // Out of deep power-down: the chip must answer with its ID again, or its data would read as junk
+            for (int attempt = 0;; attempt++) {
+                command(CMD_RELEASE_POWER_DOWN, nullptr, 0, nullptr, 0);
+                delayMicroseconds(50);
+                uint8_t again[3] = {0};
+                command(CMD_READ_JEDEC, nullptr, 0, again, 3);
+                if (memcmp(again, jedec, 3) == 0)
+                    return true;
+                if (attempt == 2) {
+                    LOG_WARN("FontPacks: QSPI flash doesn't wake (JEDEC %02x %02x %02x)", again[0], again[1], again[2]);
+                    release();
+                    return false;
+                }
+            }
+        }
         command(CMD_RELEASE_POWER_DOWN, nullptr, 0, nullptr, 0);
         delayMicroseconds(50);
-        if (!checked) {
+        {
             checked = true;
-            uint8_t id[3] = {0}, sr1 = 0, sr2 = 0;
+            uint8_t *id = jedec, sr1 = 0, sr2 = 0;
             command(CMD_READ_JEDEC, nullptr, 0, id, 3);
             command(CMD_READ_SR1, nullptr, 0, &sr1, 1);
             command(CMD_READ_SR2, nullptr, 0, &sr2, 1);
             LOG_INFO("FontPacks: QSPI flash JEDEC %02x %02x %02x, SR1 %02x SR2 %02x", id[0], id[1], id[2], sr1, sr2);
+            // No chip (an optional module missing): the lines read all 0 or all 1
+            if ((id[0] == 0x00 && id[1] == 0x00 && id[2] == 0x00) || (id[0] == 0xFF && id[1] == 0xFF && id[2] == 0xFF)) {
+                LOG_WARN("FontPacks: no flash chip answers, packs are kept as files");
+                release();
+                absent = true;
+                return false;
+            }
             // Block protection (SR1 BP bits, SR2 CMP) would make writes fail silently: clear it
             if ((sr1 & 0x7C) || (sr2 & 0x40)) {
                 const uint8_t sr[2] = {(uint8_t)(sr1 & 0x83), (uint8_t)(sr2 & ~0x40)};
