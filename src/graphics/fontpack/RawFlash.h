@@ -7,12 +7,16 @@ namespace graphics
 
 /**
  * A board's raw storage for font packs: an external NOR flash (QSPI, SPI), an EEPROM, a FRAM... The board provides it
- * (fontPackFlash()); FlashSlots keeps the packs in it. Only used from the main loop.
+ * (fontPackFlash()); FlashSlots keeps the packs in it. FontPacks calls it under its pack lock (from the main loop, or
+ * from the Bluetooth task during an upload).
  */
 class RawFlash
 {
   public:
     virtual ~RawFlash() = default;
+
+    /// True when the device answers (an optional module may be missing): packs are kept as files otherwise
+    virtual bool present() { return true; }
 
     /// Bytes of the device
     virtual uint32_t size() const = 0;
