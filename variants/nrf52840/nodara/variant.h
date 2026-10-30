@@ -134,6 +134,13 @@ static const uint8_t A0 = PIN_BATTERY_ADC;
 #define EXTERNAL_FLASH_DEVICES P25Q32
 #define EXTERNAL_FLASH_USE_QSPI // Disabled for power comparison test
 
+// Font packs in the QSPI flash: 3 slots of 1 MB from 0x000000. 0x300000-0x37FFFF is left alone: the original firmware
+// keeps its CJK font there
+#define FONTPACK_FLASH_QSPI
+#define FONTPACK_FLASH_BASE 0x000000
+#define FONTPACK_FLASH_SLOT_SIZE 0x100000
+#define FONTPACK_FLASH_SLOTS 3
+
 // ===========================================================================
 // LoRa - Ai-Thinker RA-01S (SX1262)
 // SPI bus: SPI0 (SPIM0 / default SPI)

@@ -39,17 +39,21 @@ void requestReload();
 /// True for a path where a pack is installed: kFontDir/<name>.mfp
 bool isPackPath(const char *path);
 
-/// Creates kFontDir when it doesn't exist; the caller holds the SPI lock
-void ensureDirLocked();
+/// Starts receiving a pack for packPath (a file transfer): into a partial file, or into a free slot of the board's
+/// flash. False: refused (no free slot...)
+bool beginReceive(const char *packPath);
 
-/// Where a pack is received before it is installed: its path with ".part" added (the loader ignores it)
-void partPath(const char *packPath, char *out, size_t outSize);
+/// Stores the next bytes of the pack being received
+bool receive(const uint8_t *data, uint32_t len);
 
-/// Installs a received pack: checks the partial file (structure and CRC), then puts it in place of the pack of that
-/// name, which can be in use. A pack that fails the check is deleted. Any thread except the screen's
-bool install(const char *partPath, const char *packPath);
+/// Ends the transfer: checks the pack (structure and CRC), then puts it in place of the pack of that name, which can be
+/// in use. False: refused, nothing changed
+bool endReceive();
 
-/// Removes an installed pack, which can be in use. Any thread except the screen's
+/// Abandons the pack being received
+void abortReceive();
+
+/// Removes an installed pack (file or flash slot), which can be in use. Any thread except the screen's
 bool remove(const char *packPath);
 
 /// True when the built-in fonts draw this code point themselves (ASCII, Latin-1, and the script of a language build

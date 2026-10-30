@@ -3,7 +3,10 @@
 #if HAS_FONTPACKS
 
 #include "SPILock.h"
+#include "concurrency/OSThread.h"
 #include "graphics/fontpack/FileFontStore.h"
+#include "graphics/fontpack/FlashSlots.h"
+#include "graphics/fontpack/RawFlash.h"
 #include "graphics/fontpack/fontpack.h"
 #include <atomic>
 #include <cstdio>
@@ -31,6 +34,13 @@
 
 namespace graphics
 {
+
+/// Boards that keep their packs in a raw storage define their own fontPackFlash() (QspiRawFlash.cpp...)
+__attribute__((weak)) RawFlash *fontPackFlash()
+{
+    return nullptr;
+}
+
 namespace FontPacks
 {
 
@@ -38,7 +48,7 @@ namespace
 {
 
 struct Pack {
-    FileFontStore store;
+    std::unique_ptr<FontStore> store; // a file, or a flash slot
     fp_pack pack;
     uint8_t *metrics = nullptr; // the pack's metrics table in RAM, when small enough
     ~Pack() { free(metrics); }
@@ -106,6 +116,68 @@ bool endsWith(const char *s, const char *suffix)
     return n >= m && strcasecmp(s + n - m, suffix) == 0;
 }
 
+/// The board's flash slots, when it keeps its packs in a raw storage (FONTPACK_FLASH_SLOTS)
+FlashSlots *slots()
+{
+#if defined(FONTPACK_FLASH_SLOTS)
+    if (!fontPackFlash())
+        return nullptr;
+    static FlashSlots s(*fontPackFlash(), FONTPACK_FLASH_BASE, FONTPACK_FLASH_SLOT_SIZE, FONTPACK_FLASH_SLOTS);
+    return &s;
+#else
+    return nullptr;
+#endif
+}
+
+// When the flash was last used (0: idle); FlashIdle lets it power down after 2 s
+std::atomic<uint32_t> lastFlashUse{0};
+
+void touchFlash()
+{
+    if (slots())
+        lastFlashUse = millis() | 1;
+}
+
+class FlashIdle : public concurrency::OSThread
+{
+  public:
+    FlashIdle() : OSThread("FontPackFlash") {}
+
+  protected:
+    int32_t runOnce() override;
+};
+FlashIdle *flashIdle = nullptr;
+
+/// Adds a pack to the packs in use. Pack lock held
+void addPack(std::unique_ptr<FontStore> store, const char *label)
+{
+    if (packCount >= FONTPACK_MAX_PACKS)
+        return;
+    std::unique_ptr<Pack> p(new Pack());
+    p->store = std::move(store);
+    // The CRC was checked at install (endReceive()); the reader checks every offset it reads
+    fp_result r = fp_open(&p->pack, storeRead, p->store.get(), p->store->size());
+    if (r != FP_OK) {
+        LOG_WARN("FontPacks: %s not used: %s", label, resultName(r));
+        return;
+    }
+    // Each lookup adds up the metrics of up to 63 glyphs: from RAM, not from the store, when it can
+    const uint32_t metricsSize = fp_metrics_size(&p->pack);
+    if (metricsSize <= FONTPACK_MAX_METRICS_RAM) {
+        p->metrics = static_cast<uint8_t *>(malloc(metricsSize));
+        if (p->metrics && !fp_load_metrics(&p->pack, p->metrics, metricsSize)) {
+            free(p->metrics);
+            p->metrics = nullptr;
+        }
+    }
+    LOG_INFO("FontPacks: %s: %u glyphs, %u px lines, metrics %s", label, (unsigned)p->pack.glyph_count,
+             (unsigned)p->pack.line_height, p->metrics ? "in RAM" : "read from the pack");
+    if (p->pack.line_height > maxLineHeight)
+        maxLineHeight = p->pack.line_height;
+    packs[packCount++] = std::move(p);
+}
+
+/// Pack lock held
 void loadPacks()
 {
     loaded = true;
@@ -114,15 +186,30 @@ void loadPacks()
     free(cache);
     cache = nullptr;
 
+    // Packs in the board's flash slots (the newest of a name)
+    if (FlashSlots *s = slots()) {
+        touchFlash();
+        if (!flashIdle)
+            flashIdle = new FlashIdle();
+        for (int i = 0; i < s->count(); i++) {
+            FlashSlots::Info in;
+            if (!s->info(i, in) || s->find(in.name) != i)
+                continue;
+            char label[80];
+            snprintf(label, sizeof(label), "slot %d (%s)", i, in.name);
+            addPack(std::unique_ptr<FontStore>(new SlotFontStore(s->device(), s->packAddr(i), in.size)), label);
+        }
+    }
+
+    // Packs in kFontDir
     std::vector<meshtastic_FileInfo> files;
     {
         concurrency::LockGuard g(spiLock);
-        ensureDirLocked();
+        if (!FSCom.exists(kFontDir))
+            FSCom.mkdir(kFontDir);
         files = getFiles(kFontDir, 0, FONTPACK_MAX_PACKS * 2);
     }
     for (const auto &info : files) {
-        if (packCount >= FONTPACK_MAX_PACKS)
-            break;
         // ESP32 lists full paths, the other platforms bare names
         const char *slash = strrchr(info.file_name, '/');
         const char *name = slash ? slash + 1 : info.file_name;
@@ -130,35 +217,16 @@ void loadPacks()
             continue;
         char path[64];
         snprintf(path, sizeof(path), "%s/%s", kFontDir, name);
-
-        std::unique_ptr<Pack> p(new Pack());
-        if (!p->store.open(path)) {
+        std::unique_ptr<FileFontStore> store(new FileFontStore());
+        if (!store->open(path)) {
             LOG_WARN("FontPacks: can't open %s", path);
             continue;
         }
-        // The CRC was checked at install (install()); the reader checks every offset it reads
-        fp_result r = fp_open(&p->pack, storeRead, &p->store, p->store.size());
-        if (r != FP_OK) {
-            LOG_WARN("FontPacks: %s not used: %s", path, resultName(r));
-            continue;
-        }
-        // Each lookup adds up the metrics of up to 63 glyphs: from RAM, not from the file, when it can
-        const uint32_t metricsSize = fp_metrics_size(&p->pack);
-        if (metricsSize <= FONTPACK_MAX_METRICS_RAM) {
-            p->metrics = static_cast<uint8_t *>(malloc(metricsSize));
-            if (p->metrics && !fp_load_metrics(&p->pack, p->metrics, metricsSize)) {
-                free(p->metrics);
-                p->metrics = nullptr;
-            }
-        }
-        LOG_INFO("FontPacks: %s: %u glyphs, %u px lines, metrics %s", path, (unsigned)p->pack.glyph_count,
-                 (unsigned)p->pack.line_height, p->metrics ? "in RAM" : "read from the pack");
-        if (p->pack.line_height > maxLineHeight)
-            maxLineHeight = p->pack.line_height;
-        packs[packCount++] = std::move(p);
+        addPack(std::move(store), path);
     }
+
     if (packCount == 0) {
-        LOG_DEBUG("FontPacks: none installed in %s", kFontDir);
+        LOG_DEBUG("FontPacks: none installed");
         return;
     }
     cache = static_cast<CacheEntry *>(calloc(FONTPACK_CACHE_SIZE, sizeof(CacheEntry)));
@@ -181,6 +249,7 @@ CacheEntry &lookup(uint32_t cp)
     if (e.cp == cp)
         return e;
     clearEntry(e, cp);
+    touchFlash();
     for (int i = 0; i < packCount; i++) {
         if (fp_find(&packs[i]->pack, cp, &e.glyph)) {
             e.packIndex = i;
@@ -245,66 +314,206 @@ bool isPackPath(const char *path)
            endsWith(path + n + 1, ".mfp") && strlen(path + n + 1) > 4;
 }
 
-void ensureDirLocked()
+namespace
 {
-    if (!FSCom.exists(kFontDir))
-        FSCom.mkdir(kFontDir);
+
+// The pack being received (beginReceive() to endReceive())
+enum class Rx { None, File, Slot };
+Rx rx = Rx::None;
+char rxPackPath[80];
+char rxPartPath[88];
+File rxFile;
+int rxSlot = -1;
+uint32_t rxSize = 0;
+
+const char *baseName(const char *path)
+{
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
 }
 
-void partPath(const char *packPath, char *out, size_t outSize)
+/// Checks the pack in a store (structure and CRC)
+fp_result checkPack(FontStore &store, const char *label)
 {
-    snprintf(out, outSize, "%s.part", packPath);
+    fp_pack pack;
+    const uint32_t start = millis();
+    fp_result r = fp_open(&pack, storeRead, &store, store.size());
+    if (r == FP_OK)
+        r = fp_verify(&pack);
+    LOG_INFO("FontPacks: %s checked in %u ms: %s", label, (unsigned)(millis() - start), resultName(r));
+    return r;
 }
 
-bool install(const char *partPath, const char *packPath)
+/// A received file pack: checks the partial file, then puts it in place of the pack of that name
+bool installFile()
 {
-    // Check the received file before anything else changes: the packs in use stay as they are if it fails
-    fp_result r;
     {
         FileFontStore store;
-        if (!store.open(partPath)) {
-            LOG_WARN("FontPacks: can't open %s", partPath);
+        if (!store.open(rxPartPath)) {
+            LOG_WARN("FontPacks: can't open %s", rxPartPath);
             return false;
         }
-        fp_pack pack;
-        const uint32_t start = millis();
-        r = fp_open(&pack, storeRead, &store, store.size());
-        if (r == FP_OK)
-            r = fp_verify(&pack);
-        LOG_INFO("FontPacks: %s checked in %u ms: %s", partPath, (unsigned)(millis() - start), resultName(r));
+        if (checkPack(store, rxPartPath) != FP_OK) {
+            store.close();
+            concurrency::LockGuard s(spiLock);
+            FSCom.remove(rxPartPath);
+            return false;
+        }
     }
-    if (r != FP_OK) {
-        concurrency::LockGuard s(spiLock);
-        FSCom.remove(partPath);
-        return false;
-    }
-
     // Close the packs (one may be the pack being replaced), then put the new one in place
     concurrency::LockGuard g(&packLock());
     closePacks();
     bool ok;
     {
         concurrency::LockGuard s(spiLock);
-        if (FSCom.exists(packPath))
-            FSCom.remove(packPath);
-        ok = FSCom.rename(partPath, packPath);
+        if (FSCom.exists(rxPackPath))
+            FSCom.remove(rxPackPath);
+        ok = FSCom.rename(rxPartPath, rxPackPath);
     }
-    LOG_INFO("FontPacks: %s %s", packPath, ok ? "installed" : "not installed (rename failed)");
+    LOG_INFO("FontPacks: %s %s", rxPackPath, ok ? "installed" : "not installed (rename failed)");
     return ok;
+}
+
+/// A received slot pack: checks it in the flash, then makes it valid and frees the older pack of that name
+bool installSlot()
+{
+    FlashSlots *s = slots();
+    concurrency::LockGuard g(&packLock());
+    touchFlash();
+    char label[80];
+    snprintf(label, sizeof(label), "slot %d", rxSlot);
+    SlotFontStore store(s->device(), s->packAddr(rxSlot), rxSize);
+    if (checkPack(store, label) != FP_OK)
+        return false; // the slot stays without a header: free
+    closePacks();
+    const char *name = baseName(rxPackPath);
+    const int old = s->find(name);
+    if (!s->commit(rxSlot, name, rxSize)) {
+        LOG_WARN("FontPacks: slot %d header not written", rxSlot);
+        return false;
+    }
+    if (old >= 0 && old != rxSlot)
+        s->clear(old);
+    LOG_INFO("FontPacks: %s installed in slot %d (%u bytes)", name, rxSlot, (unsigned)rxSize);
+    return true;
+}
+
+} // namespace
+
+bool beginReceive(const char *packPath)
+{
+    abortReceive();
+    snprintf(rxPackPath, sizeof(rxPackPath), "%s", packPath);
+    rxSize = 0;
+    if (FlashSlots *s = slots()) {
+        concurrency::LockGuard g(&packLock());
+        touchFlash();
+        rxSlot = s->findFree();
+        if (rxSlot < 0) {
+            LOG_WARN("FontPacks: no free slot for %s: remove a pack first", packPath);
+            return false;
+        }
+        if (!s->begin(rxSlot))
+            return false;
+        rx = Rx::Slot;
+        LOG_INFO("FontPacks: receiving %s into slot %d", packPath, rxSlot);
+        return true;
+    }
+    snprintf(rxPartPath, sizeof(rxPartPath), "%s.part", packPath);
+    concurrency::LockGuard s(spiLock);
+    if (!FSCom.exists(kFontDir))
+        FSCom.mkdir(kFontDir);
+    if (FSCom.exists(rxPartPath))
+        FSCom.remove(rxPartPath);
+    rxFile = FSCom.open(rxPartPath, FILE_O_WRITE);
+    if (!rxFile)
+        return false;
+    rx = Rx::File;
+    return true;
+}
+
+bool receive(const uint8_t *data, uint32_t len)
+{
+    bool ok = false;
+    if (rx == Rx::Slot) {
+        concurrency::LockGuard g(&packLock());
+        touchFlash();
+        ok = slots()->write(rxSlot, rxSize, data, len);
+    } else if (rx == Rx::File) {
+        concurrency::LockGuard s(spiLock);
+        ok = rxFile.write(data, len) == len;
+    }
+    if (ok)
+        rxSize += len;
+    return ok;
+}
+
+bool endReceive()
+{
+    bool ok = false;
+    if (rx == Rx::Slot) {
+        ok = installSlot();
+    } else if (rx == Rx::File) {
+        {
+            concurrency::LockGuard s(spiLock);
+            rxFile.flush();
+            rxFile.close();
+        }
+        ok = installFile();
+    }
+    rx = Rx::None;
+    return ok;
+}
+
+void abortReceive()
+{
+    if (rx == Rx::File) {
+        concurrency::LockGuard s(spiLock);
+        rxFile.close();
+        FSCom.remove(rxPartPath);
+    }
+    // A slot without a header is free: nothing to undo
+    if (rx != Rx::None)
+        LOG_INFO("FontPacks: receiving %s abandoned", rxPackPath);
+    rx = Rx::None;
 }
 
 bool remove(const char *packPath)
 {
     concurrency::LockGuard g(&packLock());
     closePacks();
-    bool ok;
+    bool ok = false;
+    if (FlashSlots *s = slots()) {
+        touchFlash();
+        for (int i = 0; i < s->count(); i++) {
+            FlashSlots::Info in;
+            if (s->info(i, in) && strcmp(in.name, baseName(packPath)) == 0)
+                ok = s->clear(i) || ok;
+        }
+    }
     {
         concurrency::LockGuard s(spiLock);
-        ok = FSCom.remove(packPath);
+        if (FSCom.exists(packPath))
+            ok = FSCom.remove(packPath) || ok;
     }
-    LOG_INFO("FontPacks: %s %s", packPath, ok ? "removed" : "not removed");
+    LOG_INFO("FontPacks: %s %s", packPath, ok ? "removed" : "not found");
     return ok;
 }
+
+namespace
+{
+int32_t FlashIdle::runOnce()
+{
+    const uint32_t used = lastFlashUse;
+    if (used && millis() - used > 2000 && rx == Rx::None) {
+        concurrency::LockGuard g(&packLock());
+        if (fontPackFlash())
+            fontPackFlash()->idle();
+        lastFlashUse = 0;
+    }
+    return 1000;
+}
+} // namespace
 
 bool builtinCovers(uint32_t cp)
 {

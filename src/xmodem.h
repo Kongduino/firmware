@@ -63,6 +63,7 @@ class XModemAdapter
   private:
     bool isReceiving = false;
     bool isTransmitting = false;
+    bool isReceivingPack = false; // a font pack: received by FontPacks (a partial file or a flash slot)
     bool isEOT = false;
 
     int retrans = MAXRETRANS;
