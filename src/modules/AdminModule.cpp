@@ -639,7 +639,11 @@ bool AdminModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshta
         LOG_DEBUG("Client requests delete file: %s", r->delete_file_request);
 
 #if HAS_FONTPACKS
-        // A font pack can be in use: the packs are closed first
+        // A font pack can be in use: the packs are closed first. The pack folder itself means every pack
+        if (strcmp(r->delete_file_request, graphics::FontPacks::kFontDir) == 0) {
+            graphics::FontPacks::removeAll();
+            break;
+        }
         if (graphics::FontPacks::isPackPath(r->delete_file_request)) {
             graphics::FontPacks::remove(r->delete_file_request);
             break;
