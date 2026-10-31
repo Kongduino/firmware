@@ -143,14 +143,42 @@ class QspiRawFlash : public RawFlash
 
     bool waitReady()
     {
+        // The status register's busy bit, read with WP# and HOLD# high. (nrfx_qspi_mem_busy_check() drives them low: a chip
+        // on hold doesn't answer, and its status reads as whatever the floating line gives)
         const uint32_t start = millis();
-        while (nrfx_qspi_mem_busy_check() == NRFX_ERROR_BUSY) {
+        uint8_t sr1 = 0;
+        while (!command(CMD_READ_SR1, nullptr, 0, &sr1, 1) || (sr1 & 0x01)) {
             if (millis() - start > BUSY_TIMEOUT_MS) {
                 LOG_WARN("FontPacks: QSPI flash busy timeout");
                 return false;
             }
         }
         return true;
+    }
+
+    /// Sends the release-from-deep-power-down command by toggling the pins (SPI mode 0), before the QSPI takes them
+    void releasePowerDownByGpio()
+    {
+        pinMode(PIN_QSPI_IO2, OUTPUT); // WP# and HOLD# high: a low HOLD# would pause the chip
+        digitalWrite(PIN_QSPI_IO2, HIGH);
+        pinMode(PIN_QSPI_IO3, OUTPUT);
+        digitalWrite(PIN_QSPI_IO3, HIGH);
+        pinMode(PIN_QSPI_CS, OUTPUT);
+        digitalWrite(PIN_QSPI_CS, HIGH);
+        pinMode(PIN_QSPI_SCK, OUTPUT);
+        digitalWrite(PIN_QSPI_SCK, LOW);
+        pinMode(PIN_QSPI_IO0, OUTPUT);
+        delayMicroseconds(1);
+        digitalWrite(PIN_QSPI_CS, LOW);
+        for (int bit = 7; bit >= 0; bit--) {
+            digitalWrite(PIN_QSPI_IO0, (CMD_RELEASE_POWER_DOWN >> bit) & 1);
+            delayMicroseconds(1);
+            digitalWrite(PIN_QSPI_SCK, HIGH);
+            delayMicroseconds(1);
+            digitalWrite(PIN_QSPI_SCK, LOW);
+        }
+        digitalWrite(PIN_QSPI_CS, HIGH);
+        delayMicroseconds(50); // tRES1: a few microseconds on the chips we know
     }
 
     /// Releases the QSPI pins, without a command: the chip lost its power
@@ -185,8 +213,17 @@ class QspiRawFlash : public RawFlash
         cfg.prot_if.readoc = NRF_QSPI_READOC_FASTREAD;
         cfg.prot_if.writeoc = NRF_QSPI_WRITEOC_PP;
         cfg.phy_if.sck_freq = FONTPACK_FLASH_QSPI_FREQ;
-        if (nrfx_qspi_init(&cfg, nullptr, nullptr) != NRFX_SUCCESS) {
-            LOG_WARN("FontPacks: QSPI init failed");
+        // While it activates, the QSPI waits for the chip to report ready; a chip in deep power-down doesn't answer (the
+        // lines float), so the activation can time out: wake it first, from GPIO
+        releasePowerDownByGpio();
+        const nrfx_err_t err = nrfx_qspi_init(&cfg, nullptr, nullptr);
+        if (err != NRFX_SUCCESS) {
+            LOG_WARN("FontPacks: QSPI init failed (0x%x)", (unsigned)err);
+            // A timed-out activation leaves the driver marked initialised: undo it, or every later init fails
+            if (err == NRFX_ERROR_TIMEOUT) {
+                nrfx_qspi_uninit();
+                *(volatile uint32_t *)0x40029054UL = 1; // anomaly 122
+            }
             return false;
         }
         active = true;
