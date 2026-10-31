@@ -538,6 +538,40 @@ bool remove(const char *packPath)
     return ok;
 }
 
+int removeAll()
+{
+    concurrency::LockGuard g(&packLock());
+    closePacks();
+    int removed = 0;
+    if (FlashSlots *s = slots()) {
+        touchFlash();
+        for (int i = 0; i < s->count(); i++) {
+            FlashSlots::Info in;
+            if (s->info(i, in) && s->clear(i))
+                removed++;
+        }
+    }
+    {
+        concurrency::LockGuard s(spiLock);
+        if (FSCom.exists(kFontDir)) {
+            std::vector<meshtastic_FileInfo> files = getFiles(kFontDir, 0, FONTPACK_MAX_PACKS * 2);
+            for (const auto &info : files) {
+                // ESP32 lists full paths, the other platforms bare names
+                const char *slash = strrchr(info.file_name, '/');
+                const char *name = slash ? slash + 1 : info.file_name;
+                if (!endsWith(name, ".mfp"))
+                    continue;
+                char path[64];
+                snprintf(path, sizeof(path), "%s/%s", kFontDir, name);
+                if (FSCom.remove(path))
+                    removed++;
+            }
+        }
+    }
+    LOG_INFO("FontPacks: all packs removed (%d)", removed);
+    return removed;
+}
+
 namespace
 {
 int32_t FlashIdle::runOnce()
