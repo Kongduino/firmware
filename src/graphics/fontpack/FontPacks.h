@@ -56,6 +56,10 @@ void abortReceive();
 /// Removes an installed pack (file or flash slot), which can be in use. Any thread except the screen's
 bool remove(const char *packPath);
 
+/// Removes every installed pack (files and flash slots), which can be in use. Returns how many were removed. Any thread
+/// except the screen's
+int removeAll();
+
 /// True when the built-in fonts draw this code point themselves (ASCII, Latin-1, and the script of a language build
 /// such as OLED_RU); the packs are only used for the others
 bool builtinCovers(uint32_t cp);
