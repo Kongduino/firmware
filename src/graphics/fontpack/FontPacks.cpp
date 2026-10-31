@@ -14,6 +14,10 @@
 #include <memory>
 #include <strings.h>
 
+// A pack received as a file must leave this much of the filesystem free (settings, node database, messages)
+#ifndef FONTPACK_FS_RESERVE
+#define FONTPACK_FS_RESERVE (128 * 1024)
+#endif
 #ifndef FONTPACK_MAX_PACKS
 #define FONTPACK_MAX_PACKS 4
 #endif
@@ -344,6 +348,7 @@ char rxPartPath[88];
 File rxFile;
 int rxSlot = -1;
 uint32_t rxSize = 0;
+uint32_t rxRoom = UINT32_MAX; // file packs: the bytes the pack may take (free space minus the reserve)
 
 const char *baseName(const char *path)
 {
@@ -444,6 +449,15 @@ bool beginReceive(const char *packPath)
         FSCom.mkdir(kFontDir);
     if (FSCom.exists(rxPartPath))
         FSCom.remove(rxPartPath);
+    // The pack must not fill the filesystem the device itself needs. Measured once (it walks the filesystem); 0 where the
+    // platform can't tell
+    rxRoom = UINT32_MAX;
+    const size_t total = fsTotalBytes(), used = fsUsedBytes();
+    if (total > 0) {
+        const size_t free = total > used ? total - used : 0;
+        rxRoom = free > FONTPACK_FS_RESERVE ? free - FONTPACK_FS_RESERVE : 0;
+        LOG_INFO("FontPacks: receiving %s: %u bytes free, room for a %u-byte pack", packPath, (unsigned)free, (unsigned)rxRoom);
+    }
     rxFile = FSCom.open(rxPartPath, FILE_O_WRITE);
     if (!rxFile)
         return false;
@@ -459,6 +473,11 @@ bool receive(const uint8_t *data, uint32_t len)
         touchFlash();
         ok = slots()->write(rxSlot, rxSize, data, len);
     } else if (rx == Rx::File) {
+        if (rxSize + len > rxRoom) {
+            LOG_WARN("FontPacks: %s doesn't fit: remove a pack first (%u bytes kept free for the device)", rxPackPath,
+                     (unsigned)FONTPACK_FS_RESERVE);
+            return false;
+        }
         concurrency::LockGuard s(spiLock);
         ok = rxFile.write(data, len) == len;
     }
