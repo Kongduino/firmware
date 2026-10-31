@@ -196,6 +196,7 @@ void XModemAdapter::handlePacket(meshtastic_XModem xmodemPacket)
                     isReceiving = true;
                     isReceivingPack = true;
                     packetno = 1;
+                    acceptedWrappedSeq0 = false;
                 } else {
                     sendControl(meshtastic_XModem_Control_NAK);
                 }
@@ -264,6 +265,7 @@ void XModemAdapter::handlePacket(meshtastic_XModem xmodemPacket)
                             break;
                         }
                         sendControl(meshtastic_XModem_Control_ACK);
+                        acceptedWrappedSeq0 = (xmodemPacket.seq == 0);
                         packetno++;
                         break;
                     }
