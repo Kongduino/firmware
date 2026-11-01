@@ -74,6 +74,9 @@ class CannedMessageModule : public SinglePortModule, public Observable<const UIF
     void drawDestinationSelectionScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
     bool isFreeTextActive() const { return runState == CANNED_MESSAGE_RUN_STATE_FREETEXT; }
     String drawWithCursor(String text, int cursor);
+    // Inserts UTF-8 text at the cursor and moves the cursor after it; the message keeps to its byte limit, never
+    // cutting a character
+    void insertFreetext(const String &text);
 
     // === Emote Picker ===
     int handleEmotePickerInput(const InputEvent *event);

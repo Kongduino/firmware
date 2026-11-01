@@ -78,6 +78,14 @@ float parseDecimalFloat(const char *s);
 // Ensures the result is null-terminated within bufSize. Returns true if any bytes were replaced.
 bool sanitizeUtf8(char *buf, size_t bufSize);
 
+// Character boundaries in UTF-8 text of len bytes, for editing it a whole character at a time: the start of the
+// character before pos, the start of the one after the character at pos, and the last boundary at or before limit
+// (where text can be cut without splitting a character). Continuation bytes are skipped, so invalid text still
+// gives positions inside [0, len]
+size_t utf8PrevBoundary(const char *text, size_t len, size_t pos);
+size_t utf8NextBoundary(const char *text, size_t len, size_t pos);
+size_t utf8FloorBoundary(const char *text, size_t len, size_t limit);
+
 // Longest User.long_name content (bytes, excluding NUL) we store or transmit.
 // The wire decode buffer stays at 40 so names from senders built against the
 // older 39-byte limit still parse; everything we keep or send is clamped to

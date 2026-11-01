@@ -134,6 +134,42 @@ size_t pb_string_length(const char *str, size_t max_len)
     return len;
 }
 
+static bool isUtf8Continuation(char c)
+{
+    return (static_cast<uint8_t>(c) & 0xC0) == 0x80;
+}
+
+size_t utf8PrevBoundary(const char *text, size_t len, size_t pos)
+{
+    if (pos > len)
+        pos = len;
+    while (pos > 0) {
+        pos--;
+        if (!isUtf8Continuation(text[pos]))
+            break;
+    }
+    return pos;
+}
+
+size_t utf8NextBoundary(const char *text, size_t len, size_t pos)
+{
+    if (pos >= len)
+        return len;
+    pos++;
+    while (pos < len && isUtf8Continuation(text[pos]))
+        pos++;
+    return pos;
+}
+
+size_t utf8FloorBoundary(const char *text, size_t len, size_t limit)
+{
+    if (limit >= len)
+        return len;
+    while (limit > 0 && isUtf8Continuation(text[limit]))
+        limit--;
+    return limit;
+}
+
 bool sanitizeUtf8(char *buf, size_t bufSize)
 {
     if (!buf || bufSize == 0)

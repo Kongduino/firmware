@@ -25,6 +25,7 @@
 #include "input/SerialKeyboard.h"
 #include "main.h" // for cardkb_found
 #include "mesh/generated/meshtastic/cannedmessages.pb.h"
+#include "meshUtils.h"
 #include "modules/AdminModule.h"
 #include "modules/ExternalNotificationModule.h" // for buzzer control
 extern MessageStore messageStore;
@@ -117,6 +118,37 @@ void CannedMessageModule::LaunchWithDestination(NodeNum newDest, uint8_t newChan
     notifyObservers(&e);
 
     LOG_TRACE("[CannedMessage] LaunchWithDestination dest=0x%08x ch=%d", dest, channel);
+}
+
+// The free text is UTF-8 and the cursor a byte offset that always sits between two characters: moving and deleting
+// go a whole character at a time (a CJK character is 3 bytes)
+static unsigned int utf8Prev(const String &s, unsigned int pos)
+{
+    return utf8PrevBoundary(s.c_str(), s.length(), pos);
+}
+
+static unsigned int utf8Next(const String &s, unsigned int pos)
+{
+    return utf8NextBoundary(s.c_str(), s.length(), pos);
+}
+
+void CannedMessageModule::insertFreetext(const String &text)
+{
+    if (this->cursor > this->freetext.length())
+        this->cursor = this->freetext.length();
+    if (this->cursor == this->freetext.length()) {
+        this->freetext += text;
+    } else {
+        this->freetext = this->freetext.substring(0, this->cursor) + text + this->freetext.substring(this->cursor);
+    }
+    this->cursor += text.length();
+    const unsigned int maxBytes = 200 - (moduleConfig.canned_message.send_bell ? 1 : 0);
+    if (this->freetext.length() > maxBytes) {
+        unsigned int end = utf8FloorBoundary(this->freetext.c_str(), this->freetext.length(), maxBytes);
+        this->freetext = this->freetext.substring(0, end);
+        if (this->cursor > end)
+            this->cursor = end;
+    }
 }
 
 // Compose through the on-screen keyboard used by devices without a physical one
@@ -1037,12 +1069,7 @@ int CannedMessageModule::handleEmotePickerInput(const InputEvent *event)
     if (isSelect) {
         String label = graphics::emotes[emotePickerIndex].label;
         String emoteInsert = label; // Just the text label, e.g., ":thumbsup:"
-        if (cursor == freetext.length()) {
-            freetext += emoteInsert;
-        } else {
-            freetext = freetext.substring(0, cursor) + emoteInsert + freetext.substring(cursor);
-        }
-        cursor += emoteInsert.length();
+        insertFreetext(emoteInsert);
         updateState(CANNED_MESSAGE_RUN_STATE_FREETEXT, true);
         screen->forceDisplay();
         return 1;
@@ -1367,12 +1394,12 @@ int32_t CannedMessageModule::runOnce()
         switch (this->payload) {
         case INPUT_BROKER_LEFT:
             if (this->runState == CANNED_MESSAGE_RUN_STATE_FREETEXT && this->cursor > 0) {
-                this->cursor--;
+                this->cursor = utf8Prev(this->freetext, this->cursor);
             }
             break;
         case INPUT_BROKER_RIGHT:
             if (this->runState == CANNED_MESSAGE_RUN_STATE_FREETEXT && this->cursor < this->freetext.length()) {
-                this->cursor++;
+                this->cursor = utf8Next(this->freetext, this->cursor);
             }
             break;
         default:
@@ -1381,18 +1408,11 @@ int32_t CannedMessageModule::runOnce()
         if (this->runState == CANNED_MESSAGE_RUN_STATE_FREETEXT) {
             e.action = UIFrameEvent::Action::REGENERATE_FRAMESET;
             switch (this->payload) {
-            case 0x08: // backspace
-                if (this->freetext.length() > 0) {
-                    if (this->cursor > 0) {
-                        if (this->cursor == this->freetext.length()) {
-                            this->freetext = this->freetext.substring(0, this->freetext.length() - 1);
-                        } else {
-                            this->freetext = this->freetext.substring(0, this->cursor - 1) +
-                                             this->freetext.substring(this->cursor, this->freetext.length());
-                        }
-                        this->cursor--;
-                    }
-                } else {
+            case 0x08: // backspace: the whole character before the cursor
+                if (this->freetext.length() > 0 && this->cursor > 0) {
+                    unsigned int start = utf8Prev(this->freetext, this->cursor);
+                    this->freetext = this->freetext.substring(0, start) + this->freetext.substring(this->cursor);
+                    this->cursor = start;
                 }
                 break;
             case INPUT_BROKER_MSG_TAB: // Tab key: handled by input handler
@@ -1404,18 +1424,7 @@ int32_t CannedMessageModule::runOnce()
                 // Only insert ASCII printable characters (32-126)
                 if (this->payload >= 32 && this->payload <= 126) {
                     requestFocus();
-                    if (this->cursor == this->freetext.length()) {
-                        this->freetext += (char)this->payload;
-                    } else {
-                        this->freetext = this->freetext.substring(0, this->cursor) + (char)this->payload +
-                                         this->freetext.substring(this->cursor);
-                    }
-                    this->cursor++;
-                    const uint16_t maxChars = 200 - (moduleConfig.canned_message.send_bell ? 1 : 0);
-                    if (this->freetext.length() > maxChars) {
-                        this->cursor = maxChars;
-                        this->freetext = this->freetext.substring(0, maxChars);
-                    }
+                    insertFreetext(String((char)this->payload));
                 }
                 break;
             }
