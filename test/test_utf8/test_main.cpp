@@ -223,6 +223,51 @@ void test_clamp_long_name_fixes_partial_rune_at_cut()
     TEST_ASSERT_EQUAL_INT('?', buf[23]);
 }
 
+// --- Character boundaries for editing (utf8PrevBoundary, utf8NextBoundary, utf8FloorBoundary) ---
+
+// "a中b😀": a (1 byte), 中 (3), b (1), 😀 (4): boundaries 0 1 4 5 9
+static const char kMixed[] = "a\xE4\xB8\xAD"
+                             "b\xF0\x9F\x98\x80";
+static const size_t kMixedLen = sizeof(kMixed) - 1;
+
+void test_utf8_prev_boundary()
+{
+    TEST_ASSERT_EQUAL(5, utf8PrevBoundary(kMixed, kMixedLen, 9)); // before the emoji
+    TEST_ASSERT_EQUAL(4, utf8PrevBoundary(kMixed, kMixedLen, 5));
+    TEST_ASSERT_EQUAL(1, utf8PrevBoundary(kMixed, kMixedLen, 4)); // a whole 中, not one byte of it
+    TEST_ASSERT_EQUAL(0, utf8PrevBoundary(kMixed, kMixedLen, 1));
+    TEST_ASSERT_EQUAL(0, utf8PrevBoundary(kMixed, kMixedLen, 0));
+    TEST_ASSERT_EQUAL(5, utf8PrevBoundary(kMixed, kMixedLen, 100)); // past the end: from the end
+}
+
+void test_utf8_next_boundary()
+{
+    TEST_ASSERT_EQUAL(1, utf8NextBoundary(kMixed, kMixedLen, 0));
+    TEST_ASSERT_EQUAL(4, utf8NextBoundary(kMixed, kMixedLen, 1));
+    TEST_ASSERT_EQUAL(5, utf8NextBoundary(kMixed, kMixedLen, 4));
+    TEST_ASSERT_EQUAL(9, utf8NextBoundary(kMixed, kMixedLen, 5));
+    TEST_ASSERT_EQUAL(9, utf8NextBoundary(kMixed, kMixedLen, 9));
+}
+
+void test_utf8_floor_boundary()
+{
+    TEST_ASSERT_EQUAL(1, utf8FloorBoundary(kMixed, kMixedLen, 2)); // inside 中: cut before it
+    TEST_ASSERT_EQUAL(1, utf8FloorBoundary(kMixed, kMixedLen, 3));
+    TEST_ASSERT_EQUAL(4, utf8FloorBoundary(kMixed, kMixedLen, 4));
+    TEST_ASSERT_EQUAL(5, utf8FloorBoundary(kMixed, kMixedLen, 8)); // inside the emoji
+    TEST_ASSERT_EQUAL(9, utf8FloorBoundary(kMixed, kMixedLen, 9));
+    TEST_ASSERT_EQUAL(9, utf8FloorBoundary(kMixed, kMixedLen, 200));
+}
+
+void test_utf8_boundaries_stay_in_range_on_invalid_text()
+{
+    // Continuation bytes only: every position stays within [0, len]
+    const char junk[] = "\x80\x80\x80";
+    TEST_ASSERT_EQUAL(0, utf8PrevBoundary(junk, 3, 3));
+    TEST_ASSERT_EQUAL(3, utf8NextBoundary(junk, 3, 0));
+    TEST_ASSERT_EQUAL(0, utf8FloorBoundary(junk, 3, 2));
+}
+
 void setup()
 {
     UNITY_BEGIN();
@@ -258,6 +303,12 @@ void setup()
     RUN_TEST(test_clamp_long_name_exact_cap_unchanged);
     RUN_TEST(test_clamp_long_name_truncates_39_bytes);
     RUN_TEST(test_clamp_long_name_fixes_partial_rune_at_cut);
+
+    // Character boundaries for editing
+    RUN_TEST(test_utf8_prev_boundary);
+    RUN_TEST(test_utf8_next_boundary);
+    RUN_TEST(test_utf8_floor_boundary);
+    RUN_TEST(test_utf8_boundaries_stay_in_range_on_invalid_text);
 
     exit(UNITY_END());
 }

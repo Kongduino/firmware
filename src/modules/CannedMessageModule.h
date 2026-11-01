@@ -76,6 +76,9 @@ class CannedMessageModule : public SinglePortModule, public Observable<const UIF
     String drawWithCursor(String text, int cursor);
     // The most bytes the free text may take (the bell, when on, takes one)
     unsigned int maxFreetextBytes() const;
+    // Inserts UTF-8 text at the cursor and moves the cursor after it; the message keeps to its byte limit, never
+    // cutting a character
+    void insertFreetext(const String &text);
 
     // === Emote Picker ===
     int handleEmotePickerInput(const InputEvent *event);
