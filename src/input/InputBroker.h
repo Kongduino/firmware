@@ -49,6 +49,7 @@ enum input_broker_event {
 #define INPUT_BROKER_MSG_BLUETOOTH_TOGGLE 0xAA
 #define INPUT_BROKER_MSG_TAB 0x09
 #define INPUT_BROKER_MSG_EMOTE_LIST 0x8F
+#define INPUT_BROKER_MSG_STROKE_MODE 0x8E // switch the compose screen between Latin and stroke (五笔画) input
 
 // Which physical joystick/gamepad button produced an event, carried in InputEvent::kbchar
 // beside the action it is mapped to. Several buttons may share one action, so this is what

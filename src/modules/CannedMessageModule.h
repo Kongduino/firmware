@@ -77,6 +77,8 @@ class CannedMessageModule : public SinglePortModule, public Observable<const UIF
     // Inserts UTF-8 text at the cursor and moves the cursor after it; the message keeps to its byte limit, never
     // cutting a character
     void insertFreetext(const String &text);
+    // The most bytes the free text may take (the bell, when on, takes one)
+    unsigned int maxFreetextBytes() const;
 
     // === Emote Picker ===
     int handleEmotePickerInput(const InputEvent *event);
@@ -193,6 +195,13 @@ class CannedMessageModule : public SinglePortModule, public Observable<const UIF
     int handleDestinationSelectionInput(const InputEvent *event, bool isUp, bool isDown, bool isSelect);
     bool handleMessageSelectorInput(const InputEvent *event, bool isUp, bool isDown, bool isSelect);
     bool handleFreeTextInput(const InputEvent *event);
+
+    // === Stroke input (五笔画, with a stroke dictionary and font packs installed) ===
+    bool strokeMode = false;                         // Alt+Space: keys type strokes, not letters
+    bool handleStrokeInput(const InputEvent *event); // true when the event was a stroke-input key
+    void pickStrokeCandidate(int i);
+    void drawStrokeInput(OLEDDisplay *display, int16_t x, int16_t y);
+    void freetextChanged(); // redraws the compose screen after an edit
     // Opens the on-screen keyboard prompt for the current destination.
     // Returns false when this device has no on-screen keyboard.
     bool showOnScreenKeyboard();

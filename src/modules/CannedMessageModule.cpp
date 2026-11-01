@@ -11,6 +11,7 @@
 #include "MessageStore.h"
 #include "NodeDB.h"
 #include "SPILock.h"
+#include "WaypointUtils.h" // utf8FromCodepoint
 #include "buzz.h"
 #include "detect/ScanI2C.h"
 #include "gps/RTC.h"
@@ -21,6 +22,7 @@
 #include "graphics/draw/NotificationRenderer.h"
 #include "graphics/draw/UIRenderer.h"
 #include "graphics/emotes.h"
+#include "graphics/fontpack/StrokeInput.h"
 #include "graphics/images.h"
 #include "input/SerialKeyboard.h"
 #include "main.h" // for cardkb_found
@@ -132,6 +134,11 @@ static unsigned int utf8Next(const String &s, unsigned int pos)
     return utf8NextBoundary(s.c_str(), s.length(), pos);
 }
 
+unsigned int CannedMessageModule::maxFreetextBytes() const
+{
+    return 200 - (moduleConfig.canned_message.send_bell ? 1 : 0);
+}
+
 void CannedMessageModule::insertFreetext(const String &text)
 {
     if (this->cursor > this->freetext.length())
@@ -142,7 +149,7 @@ void CannedMessageModule::insertFreetext(const String &text)
         this->freetext = this->freetext.substring(0, this->cursor) + text + this->freetext.substring(this->cursor);
     }
     this->cursor += text.length();
-    const unsigned int maxBytes = 200 - (moduleConfig.canned_message.send_bell ? 1 : 0);
+    const unsigned int maxBytes = maxFreetextBytes();
     if (this->freetext.length() > maxBytes) {
         unsigned int end = utf8FloorBoundary(this->freetext.c_str(), this->freetext.length(), maxBytes);
         this->freetext = this->freetext.substring(0, end);
@@ -947,6 +954,9 @@ bool CannedMessageModule::handleFreeTextInput(const InputEvent *event)
 
     // All hardware keys fall through to here (CardKB, physical, etc.)
 
+    if (handleStrokeInput(event))
+        return true;
+
     if (event->kbchar == INPUT_BROKER_MSG_EMOTE_LIST) {
         if (graphics::numEmotes > 0) { // no picker on EXCLUDE_EMOJI builds (empty emotes[])
             updateState(CANNED_MESSAGE_RUN_STATE_EMOTE_PICKER);
@@ -1030,6 +1040,164 @@ bool CannedMessageModule::handleFreeTextInput(const InputEvent *event)
     }
 
     return false;
+}
+
+void CannedMessageModule::freetextChanged()
+{
+    lastTouchMillis = millis();
+    requestFocus();
+    UIFrameEvent e;
+    e.action = UIFrameEvent::Action::REGENERATE_FRAMESET;
+    notifyObservers(&e);
+}
+
+// Stroke input (五笔画): Alt+Space switches the compose screen between letters and strokes. In stroke mode W E R S D
+// (printed 1 to 5) type 横 竖 撇 点 折 and A (printed *) any stroke; the candidates show at the bottom of the screen.
+// Space or Enter takes the first, Sym + 1 to 9 the others, Alt + left/right pages, backspace removes a stroke, Esc
+// clears them. With no strokes typed, keys other than the stroke keys type as usual (digits, punctuation, space)
+bool CannedMessageModule::handleStrokeInput(const InputEvent *event)
+{
+#if HAS_FONTPACKS
+    namespace SI = graphics::StrokeInput;
+    if (event->kbchar == INPUT_BROKER_MSG_STROKE_MODE) {
+        if (!strokeMode && !SI::available()) {
+            LOG_INFO("Stroke input: no dictionary at %s", SI::kDictPath);
+            if (screen)
+                screen->showSimpleBanner("No stroke dictionary", 2000);
+            return true;
+        }
+        strokeMode = !strokeMode;
+        SI::reset();
+        freetextChanged();
+        return true;
+    }
+    if (!strokeMode)
+        return false;
+
+    const bool composing = SI::strokeCount() > 0;
+    if (event->inputEvent == INPUT_BROKER_ANYKEY && event->kbchar != 0) {
+        const char c = static_cast<char>(std::tolower(static_cast<unsigned char>(event->kbchar)));
+        uint8_t stroke = 0;
+        switch (c) {
+        case 'w':
+            stroke = 1; // 横
+            break;
+        case 'e':
+            stroke = 2; // 竖
+            break;
+        case 'r':
+            stroke = 3; // 撇
+            break;
+        case 's':
+            stroke = 4; // 点
+            break;
+        case 'd':
+            stroke = 5; // 折
+            break;
+        case 'a':
+            stroke = SI::kAnyStroke;
+            break;
+        default:
+            break;
+        }
+        if (stroke) {
+            SI::addStroke(stroke);
+            freetextChanged();
+            return true;
+        }
+        if (composing && c >= '1' && c <= '9') {
+            pickStrokeCandidate(c - '1');
+            return true;
+        }
+        if (composing && c == ' ') {
+            pickStrokeCandidate(0);
+            return true;
+        }
+        if (composing || (c >= 'a' && c <= 'z'))
+            return true; // the other letters type nothing in stroke mode
+        return false;    // digits, punctuation, space: typed as usual
+    }
+    if (!composing)
+        return false;
+    if (event->inputEvent == INPUT_BROKER_BACK) {
+        SI::removeStroke();
+    } else if (event->inputEvent == INPUT_BROKER_LEFT) {
+        SI::prevPage();
+    } else if (event->inputEvent == INPUT_BROKER_RIGHT) {
+        SI::nextPage();
+    } else if (event->inputEvent == INPUT_BROKER_CANCEL) {
+        SI::reset();
+    } else if (isSelectEvent(event)) {
+        pickStrokeCandidate(0);
+        return true;
+    } else {
+        return false;
+    }
+    freetextChanged();
+    return true;
+#else
+    (void)event;
+    return false;
+#endif
+}
+
+void CannedMessageModule::pickStrokeCandidate(int i)
+{
+#if HAS_FONTPACKS
+    uint32_t cp = graphics::StrokeInput::pick(i);
+    if (cp)
+        insertFreetext(String(WaypointUtils::utf8FromCodepoint(cp).c_str()));
+    freetextChanged();
+#else
+    (void)i;
+#endif
+}
+
+// The strokes typed so far and the candidates, at the bottom of the compose screen
+void CannedMessageModule::drawStrokeInput(OLEDDisplay *display, int16_t x, int16_t y)
+{
+#if HAS_FONTPACKS
+    if (!strokeMode)
+        return;
+    namespace SI = graphics::StrokeInput;
+    static const char *const kStrokeGlyph[] = {"", "一", "丨", "丿", "丶", "乙", "*"};
+    const int lineH = FONT_HEIGHT_SMALL;
+    const int16_t candidateY = y + display->getHeight() - lineH - 1;
+    const int16_t strokeY = candidateY - lineH - 1;
+    const int16_t textX = x + BASEUI_BODY_LR_MARGIN;
+
+    display->setColor(BLACK);
+    display->fillRect(x, strokeY - 2, display->getWidth(), y + display->getHeight() - (strokeY - 2));
+    display->setColor(WHITE);
+    display->drawHorizontalLine(x, strokeY - 2, display->getWidth());
+
+    std::string strokes = "筆 ";
+    for (int i = 0; i < SI::strokeCount(); i++)
+        strokes += kStrokeGlyph[SI::strokeAt(i) <= SI::kAnyStroke ? SI::strokeAt(i) : 0];
+    graphics::UIRenderer::drawStringWithEmotes(display, textX, strokeY, strokes, lineH, 1, false);
+
+    // The page, right-aligned on the stroke line: the candidates take the whole width of theirs
+    if (SI::pageCount() > 1) {
+        const std::string pageText = std::to_string(SI::page() + 1) + "/" + std::to_string(SI::pageCount());
+        display->setTextAlignment(TEXT_ALIGN_LEFT);
+        display->drawString(x + display->getWidth() - display->getStringWidth(pageText.c_str()) - BASEUI_BODY_LR_MARGIN, strokeY,
+                            pageText.c_str());
+    }
+
+    std::string line;
+    const int n = SI::pageCandidateCount();
+    for (int i = 0; i < n; i++) {
+        line += static_cast<char>('1' + i);
+        line += WaypointUtils::utf8FromCodepoint(SI::pageCandidate(i));
+    }
+    if (n == 0 && SI::strokeCount() > 0)
+        line = "-";
+    graphics::UIRenderer::drawStringWithEmotes(display, textX, candidateY, line, lineH, 1, false);
+#else
+    (void)display;
+    (void)x;
+    (void)y;
+#endif
 }
 
 int CannedMessageModule::handleEmotePickerInput(const InputEvent *event)
@@ -1982,8 +2150,9 @@ void CannedMessageModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *st
 
         // Char count right-aligned
         if (runState != CANNED_MESSAGE_RUN_STATE_DESTINATION_SELECTION) {
-            uint16_t charsLeft =
-                meshtastic_Constants_DATA_PAYLOAD_LEN - this->freetext.length() - (moduleConfig.canned_message.send_bell ? 1 : 0);
+            // Bytes, the limit the editor keeps to (a CJK character takes 3)
+            const unsigned int used = this->freetext.length();
+            int charsLeft = used < maxFreetextBytes() ? (int)(maxFreetextBytes() - used) : 0;
             snprintf(buffer, sizeof(buffer), "%d left", charsLeft);
             display->drawString(x + display->getWidth() - display->getStringWidth(buffer) - BASEUI_HEADER_LR_MARGIN,
                                 y + BASEUI_HEADER_MARGIN, buffer);
@@ -2079,6 +2248,7 @@ void CannedMessageModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *st
             drawWrappedEmoteText(display, inputX, inputY, msgWithCursor.c_str(),
                                  display->getWidth() - inputX - BASEUI_BODY_LR_MARGIN, FONT_HEIGHT_SMALL);
         }
+        drawStrokeInput(display, x, y);
 #endif
         return;
     }

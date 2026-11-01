@@ -36,6 +36,7 @@
 #include "RadioInterface.h"
 #include "TypeConversions.h"
 #include "graphics/fontpack/FontPacks.h"
+#include "graphics/fontpack/StrokeInput.h"
 #include "mesh/AdminKeys.h"
 #include "mesh/RadioLibInterface.h"
 #ifdef MESHTASTIC_PHONEAPI_ACCESS_CONTROL
@@ -648,6 +649,8 @@ bool AdminModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshta
             graphics::FontPacks::remove(r->delete_file_request);
             break;
         }
+        if (strcmp(r->delete_file_request, graphics::StrokeInput::kDictPath) == 0)
+            graphics::StrokeInput::close(); // open while in use
 #endif
 #ifdef FSCom
         spiLock->lock();
