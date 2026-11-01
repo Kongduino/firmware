@@ -51,6 +51,7 @@
 #include "xmodem.h"
 #include "SPILock.h"
 #include "graphics/fontpack/FontPacks.h"
+#include "graphics/fontpack/StrokeInput.h"
 #include <cstring>
 
 #ifdef FSCom
@@ -204,6 +205,11 @@ void XModemAdapter::handlePacket(meshtastic_XModem xmodemPacket)
             }
 #endif
             if (xmodemPacket.control == meshtastic_XModem_Control_SOH) { // Receive this file and put to Flash
+#if HAS_FONTPACKS
+                // The stroke dictionary is open while in use: closed before it's replaced, opened again after
+                if (strcmp(filename, graphics::StrokeInput::kDictPath) == 0)
+                    graphics::StrokeInput::close();
+#endif
                 // FILE_O_WRITE on Adafruit_LittleFS is append, not truncate - remove first.
                 spiLock->lock();
                 if (FSCom.exists(filename))
@@ -313,6 +319,10 @@ void XModemAdapter::handlePacket(meshtastic_XModem xmodemPacket)
         file.close();
         spiLock->unlock();
         isReceiving = false;
+#if HAS_FONTPACKS
+        if (strcmp(filename, graphics::StrokeInput::kDictPath) == 0)
+            graphics::StrokeInput::close(); // a lookup during the transfer may have found it incomplete
+#endif
         break;
     case meshtastic_XModem_Control_CAN:
         // Cancel transmission and remove file
