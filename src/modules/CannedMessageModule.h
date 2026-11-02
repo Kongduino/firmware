@@ -74,11 +74,9 @@ class CannedMessageModule : public SinglePortModule, public Observable<const UIF
     void drawDestinationSelectionScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
     bool isFreeTextActive() const { return runState == CANNED_MESSAGE_RUN_STATE_FREETEXT; }
     String drawWithCursor(String text, int cursor);
-    // The most bytes the free text may take (the bell, when on, takes one)
-    unsigned int maxFreetextBytes() const;
-    // Inserts UTF-8 text at the cursor and moves the cursor after it; the message keeps to its byte limit, never
-    // cutting a character
-    void insertFreetext(const String &text);
+    // Inserts UTF-8 text at the cursor and moves the cursor after it, when it fits whole within the byte limit (half
+    // an emote label or a cut character would be garbage); false when it doesn't
+    bool insertFreetext(const String &text);
     // The most bytes the free text may take (the bell, when on, takes one)
     unsigned int maxFreetextBytes() const;
 
