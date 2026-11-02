@@ -134,13 +134,10 @@ static unsigned int utf8Next(const String &s, unsigned int pos)
     return utf8NextBoundary(s.c_str(), s.length(), pos);
 }
 
-unsigned int CannedMessageModule::maxFreetextBytes() const
+bool CannedMessageModule::insertFreetext(const String &text)
 {
-    return 200 - (moduleConfig.canned_message.send_bell ? 1 : 0);
-}
-
-void CannedMessageModule::insertFreetext(const String &text)
-{
+    if (this->freetext.length() + text.length() > maxFreetextBytes())
+        return false;
     if (this->cursor > this->freetext.length())
         this->cursor = this->freetext.length();
     if (this->cursor == this->freetext.length()) {
@@ -149,13 +146,7 @@ void CannedMessageModule::insertFreetext(const String &text)
         this->freetext = this->freetext.substring(0, this->cursor) + text + this->freetext.substring(this->cursor);
     }
     this->cursor += text.length();
-    const unsigned int maxBytes = maxFreetextBytes();
-    if (this->freetext.length() > maxBytes) {
-        unsigned int end = utf8FloorBoundary(this->freetext.c_str(), this->freetext.length(), maxBytes);
-        this->freetext = this->freetext.substring(0, end);
-        if (this->cursor > end)
-            this->cursor = end;
-    }
+    return true;
 }
 
 // Compose through the on-screen keyboard used by devices without a physical one
@@ -1144,9 +1135,10 @@ bool CannedMessageModule::handleStrokeInput(const InputEvent *event)
 void CannedMessageModule::pickStrokeCandidate(int i)
 {
 #if HAS_FONTPACKS
-    uint32_t cp = graphics::StrokeInput::pick(i);
-    if (cp)
-        insertFreetext(String(WaypointUtils::utf8FromCodepoint(cp).c_str()));
+    // Only when it fits: otherwise the strokes stay, and the user can delete text to make room
+    uint32_t cp = graphics::StrokeInput::pageCandidate(i);
+    if (cp && insertFreetext(String(WaypointUtils::utf8FromCodepoint(cp).c_str())))
+        graphics::StrokeInput::pick(i);
     freetextChanged();
 #else
     (void)i;
