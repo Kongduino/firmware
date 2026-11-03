@@ -4,8 +4,8 @@
 
 #include "DebugConfiguration.h"
 #include "concurrency/LockGuard.h"
-#include "graphics/fontpack/FileFontStore.h"
 #include "graphics/fontpack/strokedict.h"
+#include <memory>
 
 namespace graphics
 {
@@ -21,7 +21,7 @@ concurrency::Lock &inputLock()
     return lock;
 }
 
-FileFontStore store;
+std::unique_ptr<FontStore> store; // FontPacks::openInstalled: a flash slot or a file
 sd_dict dict;
 enum class State { Closed, Open, Missing } state = State::Closed;
 
@@ -33,7 +33,7 @@ int currentPage = 0;
 
 bool storeRead(void *ctx, uint32_t off, void *buf, uint32_t len)
 {
-    return static_cast<FileFontStore *>(ctx)->read(off, buf, len);
+    return static_cast<FontStore *>(ctx)->read(off, buf, len);
 }
 
 bool openLocked();
@@ -55,14 +55,15 @@ bool openLocked()
     if (state == State::Missing)
         return false;
     state = State::Missing;
-    if (!store.open(kDictPath))
+    store = FontPacks::openInstalled(kDictPath);
+    if (!store)
         return false;
-    sd_result r = sd_open(&dict, storeRead, &store, store.size());
+    sd_result r = sd_open(&dict, storeRead, store.get(), store->size());
     if (r == SD_OK)
         r = sd_verify(&dict);
     if (r != SD_OK) {
         LOG_WARN("StrokeInput: %s refused (%d)", kDictPath, (int)r);
-        store.close();
+        store.reset();
         return false;
     }
     LOG_INFO("StrokeInput: %s, %u characters", kDictPath, (unsigned)dict.entry_count);
@@ -81,7 +82,7 @@ bool available()
 void close()
 {
     concurrency::LockGuard g(&inputLock());
-    store.close();
+    store.reset();
     state = State::Closed;
     candidateTotal = 0;
 }
@@ -193,6 +194,30 @@ uint32_t pick(int i)
         candidateTotal = 0;
         currentPage = 0;
     }
+    return cp;
+}
+
+int candidateCount()
+{
+    concurrency::LockGuard g(&inputLock());
+    return candidateTotal;
+}
+
+uint32_t candidateAt(int i)
+{
+    concurrency::LockGuard g(&inputLock());
+    return (i >= 0 && i < candidateTotal) ? candidates[i] : 0;
+}
+
+uint32_t pickAt(int i)
+{
+    concurrency::LockGuard g(&inputLock());
+    if (i < 0 || i >= candidateTotal)
+        return 0;
+    uint32_t cp = candidates[i];
+    strokeTotal = 0;
+    candidateTotal = 0;
+    currentPage = 0;
     return cp;
 }
 
