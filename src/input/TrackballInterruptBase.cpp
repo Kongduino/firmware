@@ -65,21 +65,26 @@ void TrackballInterruptBase::init(uint8_t pinDown, uint8_t pinUp, uint8_t pinLef
         pinMode(pinPress, INPUT_PULLUP);
         attachInterrupt(pinPress, onIntPress, TB_DIRECTION);
     }
+#if defined(TB_COUNT_PRESSES) && !TB_THRESHOLD
+    const auto directionEdges = CHANGE; // presses counted in the interrupt: both edges
+#else
+    const auto directionEdges = TB_DIRECTION;
+#endif
     if (this->_pinDown != 255) {
         pinMode(this->_pinDown, INPUT_PULLUP);
-        attachInterrupt(this->_pinDown, onIntDown, TB_DIRECTION);
+        attachInterrupt(this->_pinDown, onIntDown, directionEdges);
     }
     if (this->_pinUp != 255) {
         pinMode(this->_pinUp, INPUT_PULLUP);
-        attachInterrupt(this->_pinUp, onIntUp, TB_DIRECTION);
+        attachInterrupt(this->_pinUp, onIntUp, directionEdges);
     }
     if (this->_pinLeft != 255) {
         pinMode(this->_pinLeft, INPUT_PULLUP);
-        attachInterrupt(this->_pinLeft, onIntLeft, TB_DIRECTION);
+        attachInterrupt(this->_pinLeft, onIntLeft, directionEdges);
     }
     if (this->_pinRight != 255) {
         pinMode(this->_pinRight, INPUT_PULLUP);
-        attachInterrupt(this->_pinRight, onIntRight, TB_DIRECTION);
+        attachInterrupt(this->_pinRight, onIntRight, directionEdges);
     }
 
     LOG_DEBUG("Trackball GPIO initialized - UP:%d DOWN:%d LEFT:%d RIGHT:%d PRESS:%d", this->_pinUp, this->_pinDown,
@@ -125,6 +130,31 @@ int32_t TrackballInterruptBase::runOnce()
         }
     }
 
+#if defined(TB_COUNT_PRESSES) && !TB_THRESHOLD
+    // Counted presses: one event per press, oldest direction first, unless a press event claimed this poll; then a key
+    // held past LONG_PRESS_DURATION repeats
+    if (e.inputEvent == INPUT_BROKER_NONE) {
+        const input_broker_event events[4] = {this->_eventUp, this->_eventDown, this->_eventLeft, this->_eventRight};
+        const uint8_t pins[4] = {_pinUp, _pinDown, _pinLeft, _pinRight};
+        for (int i = 0; i < 4 && e.inputEvent == INPUT_BROKER_NONE; i++) {
+            if (pressCount[i] == 0)
+                continue;
+            noInterrupts();
+            pressCount[i]--;
+            interrupts();
+            e.inputEvent = events[i];
+        }
+        for (int i = 0; i < 4 && e.inputEvent == INPUT_BROKER_NONE; i++) {
+            if (pins[i] == 255 || digitalRead(pins[i]) || !lastEdgeLow[i])
+                continue;
+            const uint32_t now = Time::getMillis();
+            if (now - lastEdgeTime[i] >= LONG_PRESS_DURATION && now - lastRepeatTime >= DIRECTION_REPEAT_MS) {
+                lastRepeatTime = now;
+                e.inputEvent = events[i];
+            }
+        }
+    }
+#else
     if (directionDetected && directionStartTime > 0) {
         uint32_t directionDuration = millis() - directionStartTime;
         uint8_t directionPressedNow = 0;
@@ -171,6 +201,8 @@ int32_t TrackballInterruptBase::runOnce()
         }
     }
 
+#endif // TB_COUNT_PRESSES
+
 #if TB_THRESHOLD
     // A starting press suppresses direction events as it always has, and a press event already
     // emitted this poll (a release classified on a later poll) must not be overwritten either.
@@ -189,7 +221,7 @@ int32_t TrackballInterruptBase::runOnce()
             e.inputEvent = this->_eventRight;
         }
     }
-#else
+#elif !defined(TB_COUNT_PRESSES)
     // A press event already claimed this poll: a direction IRQ must not overwrite the tap.
     // A direction key pressed since the last poll counts even when it's already released: a quick tap between two polls,
     // or while the device was busy, isn't lost. Edges right after a seen release are its bounce, not a new press
@@ -270,6 +302,10 @@ void TrackballInterruptBase::intPressHandler()
 
 void TrackballInterruptBase::intDownHandler()
 {
+#if defined(TB_COUNT_PRESSES) && !TB_THRESHOLD
+    countEdge(1, _pinDown);
+    return;
+#endif
     if (TB_THRESHOLD || !Throttle::isWithinTimespanMs(lastInterruptTime, 10))
         this->action = TB_ACTION_DOWN;
     lastInterruptTime = Time::skipZero(Time::getMillis());
@@ -281,6 +317,10 @@ void TrackballInterruptBase::intDownHandler()
 
 void TrackballInterruptBase::intUpHandler()
 {
+#if defined(TB_COUNT_PRESSES) && !TB_THRESHOLD
+    countEdge(0, _pinUp);
+    return;
+#endif
     if (TB_THRESHOLD || !Throttle::isWithinTimespanMs(lastInterruptTime, 10))
         this->action = TB_ACTION_UP;
     lastInterruptTime = Time::skipZero(Time::getMillis());
@@ -292,6 +332,10 @@ void TrackballInterruptBase::intUpHandler()
 
 void TrackballInterruptBase::intLeftHandler()
 {
+#if defined(TB_COUNT_PRESSES) && !TB_THRESHOLD
+    countEdge(2, _pinLeft);
+    return;
+#endif
     if (TB_THRESHOLD || !Throttle::isWithinTimespanMs(lastInterruptTime, 10))
         this->action = TB_ACTION_LEFT;
     lastInterruptTime = Time::skipZero(Time::getMillis());
@@ -302,6 +346,10 @@ void TrackballInterruptBase::intLeftHandler()
 
 void TrackballInterruptBase::intRightHandler()
 {
+#if defined(TB_COUNT_PRESSES) && !TB_THRESHOLD
+    countEdge(3, _pinRight);
+    return;
+#endif
     if (TB_THRESHOLD || !Throttle::isWithinTimespanMs(lastInterruptTime, 10))
         this->action = TB_ACTION_RIGHT;
     lastInterruptTime = Time::skipZero(Time::getMillis());
@@ -309,3 +357,17 @@ void TrackballInterruptBase::intRightHandler()
     right_counter++;
 #endif
 }
+
+#if defined(TB_COUNT_PRESSES) && !TB_THRESHOLD
+// In the interrupt, on each edge of a direction key: a press is the pin going low after being stable at least
+// PRESS_STABLE_MS (the bounces of a press or a release are faster)
+void TrackballInterruptBase::countEdge(int index, uint8_t pin)
+{
+    const uint32_t now = Time::getMillis();
+    const bool low = !digitalRead(pin);
+    if (low && !lastEdgeLow[index] && now - lastEdgeTime[index] >= PRESS_STABLE_MS && pressCount[index] < 255)
+        pressCount[index]++;
+    lastEdgeLow[index] = low;
+    lastEdgeTime[index] = now;
+}
+#endif
