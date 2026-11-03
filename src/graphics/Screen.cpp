@@ -2171,6 +2171,9 @@ int Screen::handleInputEvent(const InputEvent *event)
         NotificationRenderer::inEvent = *event;
         static OverlayCallback overlays[] = {graphics::UIRenderer::drawNavigationBar, NotificationRenderer::drawBannercallback};
         ui->setOverlays(overlays, 2);
+        // E-Ink: each key press redraws the keyboard at once, with a fast refresh (no rate limit, no full refresh while
+        // typing; the next frame after it takes the full refresh)
+        EINK_ADD_FRAMEFLAG(dispdev, DEMAND_FAST);
         setFastFramerate(); // Draw ASAP
         updateUiFrame(ui);
         return 0;
