@@ -433,6 +433,9 @@ void Screen::showTextInput(const char *header, const char *initialText, uint32_t
                            std::function<void(const std::string &)> textCallback)
 {
     LOG_INFO("showTextInput header='%s', durationMs=%d", header ? header : "NULL", durationMs);
+#ifdef USE_EINK
+    EINK_ADD_FRAMEFLAG(dispdev, DEMAND_FAST); // Show the keyboard at once, like the overlay menus
+#endif
 
     // Start OnScreenKeyboardModule session (non-touch variant)
     OnScreenKeyboardModule::instance().start(header, initialText, durationMs, textCallback);
