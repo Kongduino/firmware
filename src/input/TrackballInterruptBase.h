@@ -87,6 +87,20 @@ class TrackballInterruptBase : public Observable<const InputEvent *>, public con
     uint32_t lastDirectionRelease = 0;
     static const uint32_t DIRECTION_BOUNCE_MS = 40;
 
+#if defined(TB_COUNT_PRESSES) && !TB_THRESHOLD
+    // TB_COUNT_PRESSES (a board's choice): the direction keys interrupt on both edges, and the interrupt counts the
+    // presses, so every tap reaches the poll however late it runs (a busy e-ink board polls a second apart). A press is
+    // the pin going low after being stable for PRESS_STABLE_MS: the bounces of a press or a release come within it.
+    // Index: up, down, left, right
+    volatile uint8_t pressCount[4] = {0, 0, 0, 0};
+    volatile uint32_t lastEdgeTime[4] = {0, 0, 0, 0};
+    volatile bool lastEdgeLow[4] = {false, false, false, false};
+    uint32_t lastRepeatTime = 0;
+    static const uint32_t PRESS_STABLE_MS = 20;
+    static const uint32_t DIRECTION_REPEAT_MS = 150;
+    void countEdge(int index, uint8_t pin);
+#endif
+
 #if TB_THRESHOLD
     volatile uint8_t left_counter = 0;
     volatile uint8_t right_counter = 0;

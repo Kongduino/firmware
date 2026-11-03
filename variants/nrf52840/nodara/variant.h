@@ -300,6 +300,8 @@ static const uint8_t A0 = PIN_BATTERY_ADC;
 #define TB_RIGHT PIN_BUTTON_RIGHT
 #define TB_PRESS PIN_BUTTON_B
 #define TB_DIRECTION FALLING
+// The e-ink keeps the device busy: polls come a second apart, so the direction presses are counted in the interrupt
+#define TB_COUNT_PRESSES
 
 #define CANCEL_BUTTON_PIN PIN_BUTTON_A
 #define CANCEL_BUTTON_ACTIVE_LOW true
