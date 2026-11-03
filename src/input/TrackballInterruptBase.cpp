@@ -147,6 +147,7 @@ int32_t TrackballInterruptBase::runOnce()
             directionDetected = false;
             directionStartTime = 0;
             directionInterval = 0;
+            lastDirectionRelease = Time::skipZero(Time::getMillis());
             this->action = TB_ACTION_NONE;
         } else if (directionDuration >= LONG_PRESS_DURATION && directionInterval >= DIRECTION_REPEAT_THRESHOLD &&
                    e.inputEvent == INPUT_BROKER_NONE) {
@@ -190,24 +191,45 @@ int32_t TrackballInterruptBase::runOnce()
     }
 #else
     // A press event already claimed this poll: a direction IRQ must not overwrite the tap.
-    if (e.inputEvent == INPUT_BROKER_NONE) {
-        if (this->action == TB_ACTION_UP && !digitalRead(_pinUp) && !directionDetected) {
-            directionDetected = true;
-            directionStartTime = Time::skipZero(Time::getMillis());
-            e.inputEvent = this->_eventUp;
-            // send event first,will automatically trigger every 50ms * 3 after 500ms
-        } else if (this->action == TB_ACTION_DOWN && !digitalRead(_pinDown) && !directionDetected) {
-            directionDetected = true;
-            directionStartTime = Time::skipZero(Time::getMillis());
-            e.inputEvent = this->_eventDown;
-        } else if (this->action == TB_ACTION_LEFT && !digitalRead(_pinLeft) && !directionDetected) {
-            directionDetected = true;
-            directionStartTime = Time::skipZero(Time::getMillis());
-            e.inputEvent = this->_eventLeft;
-        } else if (this->action == TB_ACTION_RIGHT && !digitalRead(_pinRight) && !directionDetected) {
-            directionDetected = true;
-            directionStartTime = Time::skipZero(Time::getMillis());
-            e.inputEvent = this->_eventRight;
+    // A direction key pressed since the last poll counts even when it's already released: a quick tap between two polls,
+    // or while the device was busy, isn't lost. Edges right after a seen release are its bounce, not a new press
+    if (e.inputEvent == INPUT_BROKER_NONE && !directionDetected) {
+        uint8_t pin = 255;
+        input_broker_event event = INPUT_BROKER_NONE;
+        switch (this->action) {
+        case TB_ACTION_UP:
+            pin = _pinUp;
+            event = this->_eventUp;
+            break;
+        case TB_ACTION_DOWN:
+            pin = _pinDown;
+            event = this->_eventDown;
+            break;
+        case TB_ACTION_LEFT:
+            pin = _pinLeft;
+            event = this->_eventLeft;
+            break;
+        case TB_ACTION_RIGHT:
+            pin = _pinRight;
+            event = this->_eventRight;
+            break;
+        default:
+            break;
+        }
+        if (event != INPUT_BROKER_NONE) {
+            const bool held = !digitalRead(pin);
+            const bool afterRelease =
+                lastDirectionRelease == 0 || (int32_t)(lastInterruptTime - lastDirectionRelease) > (int32_t)DIRECTION_BOUNCE_MS;
+            if (held || afterRelease) {
+                e.inputEvent = event;
+                if (held) {
+                    // Held: repeats after LONG_PRESS_DURATION, until the release is seen
+                    directionDetected = true;
+                    directionStartTime = Time::skipZero(Time::getMillis());
+                } else {
+                    lastDirectionRelease = Time::skipZero(Time::getMillis());
+                }
+            }
         }
     }
 #endif

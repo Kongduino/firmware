@@ -83,6 +83,9 @@ class TrackballInterruptBase : public Observable<const InputEvent *>, public con
     volatile uint32_t lastPressInterruptTime = 0;
     uint32_t pressIrqSeen = 0;
     bool longPressRepeatSent = false;
+    // When a direction key was last seen released (0: not yet): an edge soon after it is the release's bounce
+    uint32_t lastDirectionRelease = 0;
+    static const uint32_t DIRECTION_BOUNCE_MS = 40;
 
 #if TB_THRESHOLD
     volatile uint8_t left_counter = 0;
