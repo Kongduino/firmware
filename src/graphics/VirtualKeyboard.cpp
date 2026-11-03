@@ -625,6 +625,9 @@ void VirtualKeyboard::moveCursorLeft()
             cursorCol = KEYBOARD_COLS - 1;
         }
     }
+    // Stroke layout: over the empty candidate cells, from the action keys to the last candidate or the pad
+    while (isEmptyCandidate(cursorRow, cursorCol))
+        cursorCol--;
 }
 void VirtualKeyboard::moveCursorRight()
 {
@@ -641,6 +644,22 @@ void VirtualKeyboard::moveCursorRight()
             cursorCol = 0;
         }
     }
+    // Stroke layout: over the empty candidate cells, from the pad or the last candidate to the action keys
+    while (isEmptyCandidate(cursorRow, cursorCol))
+        cursorCol++;
+}
+
+bool VirtualKeyboard::isEmptyCandidate(int row, int col)
+{
+#if HAS_FONTPACKS
+    if (!strokeMode || row >= kCandidateRows || col < kPadCols || col >= KEYBOARD_COLS - 1)
+        return false;
+    return candidatePage * kCandidatesPerPage + row * kCandidateCols + col - kPadCols >= StrokeInput::candidateCount();
+#else
+    (void)row;
+    (void)col;
+    return false;
+#endif
 }
 
 void VirtualKeyboard::handlePress()

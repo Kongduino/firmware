@@ -85,6 +85,7 @@ class VirtualKeyboard
 
     bool handleStrokePress(bool isLongPress); // true when the stroke layout took the press
     void pickCandidate(int index);
+    bool isEmptyCandidate(int row, int col); // a candidate cell of the stroke layout with no candidate in it
     bool insertText(const std::string &text); // whole or not at all, within the length limit
     std::string keyLabel(int row, int col);   // a key's label in the current layout ("" for none)
     void drawLabeledKey(OLEDDisplay *display, const std::string &keyText, bool isAction, bool selected, int16_t x, int16_t y,
