@@ -15,8 +15,9 @@ namespace graphics
 namespace StrokeInput
 {
 
-/// Where the stroke dictionary is installed (uploaded like a font pack, by XModem)
-constexpr const char *kDictPath = "/fonts/strokes.msd";
+/// Where the stroke dictionary is installed (uploaded like a font pack, by XModem; in a flash slot on boards that keep
+/// their packs there)
+constexpr const char *kDictPath = FontPacks::kStrokeDictPath;
 
 /// Candidates shown per page
 constexpr int kPageSize = 9;
@@ -55,6 +56,12 @@ void prevPage();
 
 /// The candidate at index i of the current page, the strokes then cleared; 0 when there's none
 uint32_t pick(int i);
+
+/// All the candidates looked up (up to 64), for a display with its own pages: how many, the one at index i (0 when
+/// there's none), and picking it (the strokes then cleared)
+int candidateCount();
+uint32_t candidateAt(int i);
+uint32_t pickAt(int i);
 
 } // namespace StrokeInput
 } // namespace graphics

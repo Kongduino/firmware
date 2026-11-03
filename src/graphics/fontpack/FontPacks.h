@@ -16,7 +16,9 @@
 
 #if HAS_FONTPACKS
 
+#include "graphics/fontpack/FontStore.h"
 #include <OLEDDisplay.h>
+#include <memory>
 #include <stdint.h>
 
 namespace graphics
@@ -39,6 +41,17 @@ void requestReload();
 /// True for a path where a pack is installed: kFontDir/<name>.mfp
 bool isPackPath(const char *path);
 
+/// Where the stroke dictionary is installed (StrokeInput). It's received and kept like a pack (a flash slot, else a
+/// file), checked as a dictionary, and never loaded as a pack
+constexpr const char *kStrokeDictPath = "/fonts/strokes.msd";
+
+/// True for a path installed through FontPacks (beginReceive...endReceive, remove): a pack or the stroke dictionary
+bool isInstallPath(const char *path);
+
+/// An installed file that isn't a pack (the stroke dictionary): in its flash slot, else its file, read under the packs'
+/// lock (the flash powers down when idle). nullptr when it isn't installed
+std::unique_ptr<FontStore> openInstalled(const char *path);
+
 /// Starts receiving a pack for packPath (a file transfer): into a partial file, or into a free slot of the board's
 /// flash. False: refused (no free slot...)
 bool beginReceive(const char *packPath);
@@ -56,8 +69,8 @@ void abortReceive();
 /// Removes an installed pack (file or flash slot), which can be in use. Any thread except the screen's
 bool remove(const char *packPath);
 
-/// Removes every installed pack (files and flash slots), which can be in use. Returns how many were removed. Any thread
-/// except the screen's
+/// Removes every installed pack (files and flash slots), which can be in use; the stroke dictionary stays. Returns how
+/// many were removed. Any thread except the screen's
 int removeAll();
 
 /// True when the built-in fonts draw this code point themselves (ASCII, Latin-1, and the script of a language build

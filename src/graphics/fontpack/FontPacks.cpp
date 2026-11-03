@@ -7,7 +7,9 @@
 #include "graphics/fontpack/FileFontStore.h"
 #include "graphics/fontpack/FlashSlots.h"
 #include "graphics/fontpack/RawFlash.h"
+#include "graphics/fontpack/StrokeInput.h"
 #include "graphics/fontpack/fontpack.h"
+#include "graphics/fontpack/strokedict.h"
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -209,8 +211,8 @@ void loadPacks()
             flashIdle = new FlashIdle();
         for (int i = 0; i < s->count(); i++) {
             FlashSlots::Info in;
-            if (!s->info(i, in) || s->find(in.name) != i)
-                continue;
+            if (!s->info(i, in) || s->find(in.name) != i || !endsWith(in.name, ".mfp"))
+                continue; // the stroke dictionary has a slot too
             char label[80];
             snprintf(label, sizeof(label), "slot %d (%s)", i, in.name);
             addPack(std::unique_ptr<FontStore>(new SlotFontStore(s->device(), s->packAddr(i), in.size)), label);
@@ -330,6 +332,11 @@ void requestReload()
     reloadRequested = true;
 }
 
+bool isInstallPath(const char *path)
+{
+    return isPackPath(path) || (path && strcmp(path, kStrokeDictPath) == 0);
+}
+
 bool isPackPath(const char *path)
 {
     const size_t n = strlen(kFontDir);
@@ -368,6 +375,21 @@ fp_result checkPack(FontStore &store, const char *label)
     return r;
 }
 
+/// Checks what was received: a pack (structure and CRC), or the stroke dictionary (its reader's check)
+bool checkReceived(FontStore &store, const char *label)
+{
+    if (strcmp(rxPackPath, kStrokeDictPath) != 0)
+        return checkPack(store, label) == FP_OK;
+    sd_dict d;
+    const uint32_t start = millis();
+    sd_result r = sd_open(&d, storeRead, &store, store.size());
+    if (r == SD_OK)
+        r = sd_verify(&d);
+    LOG_INFO("FontPacks: %s checked in %u ms: %s", label, (unsigned)(millis() - start),
+             r == SD_OK ? "OK" : "not a valid stroke dictionary");
+    return r == SD_OK;
+}
+
 /// A received file pack: checks the partial file, then puts it in place of the pack of that name
 bool installFile()
 {
@@ -377,7 +399,7 @@ bool installFile()
             LOG_WARN("FontPacks: can't open %s", rxPartPath);
             return false;
         }
-        if (checkPack(store, rxPartPath) != FP_OK) {
+        if (!checkReceived(store, rxPartPath)) {
             store.close();
             concurrency::LockGuard s(spiLock);
             FSCom.remove(rxPartPath);
@@ -407,7 +429,7 @@ bool installSlot()
     char label[80];
     snprintf(label, sizeof(label), "slot %d", rxSlot);
     SlotFontStore store(s->device(), s->packAddr(rxSlot), rxSize);
-    if (checkPack(store, label) != FP_OK)
+    if (!checkReceived(store, label))
         return false; // the slot stays without a header: free
     closePacks();
     const char *name = baseName(rxPackPath);
@@ -489,6 +511,10 @@ bool receive(const uint8_t *data, uint32_t len)
 bool endReceive()
 {
     bool ok = false;
+    // The dictionary in use is closed before it's replaced (StrokeInput opens it again); not under the pack lock, which
+    // its reads take
+    if (rx != Rx::None && strcmp(rxPackPath, kStrokeDictPath) == 0)
+        StrokeInput::close();
     if (rx == Rx::Slot) {
         ok = installSlot();
     } else if (rx == Rx::File) {
@@ -518,6 +544,8 @@ void abortReceive()
 
 bool remove(const char *packPath)
 {
+    if (strcmp(packPath, kStrokeDictPath) == 0)
+        StrokeInput::close(); // not under the pack lock, which its reads take
     concurrency::LockGuard g(&packLock());
     closePacks();
     bool ok = false;
@@ -547,8 +575,8 @@ int removeAll()
         touchFlash();
         for (int i = 0; i < s->count(); i++) {
             FlashSlots::Info in;
-            if (s->info(i, in) && s->clear(i))
-                removed++;
+            if (s->info(i, in) && endsWith(in.name, ".mfp") && s->clear(i))
+                removed++; // packs only: the stroke dictionary stays
         }
     }
     {
@@ -570,6 +598,47 @@ int removeAll()
     }
     LOG_INFO("FontPacks: all packs removed (%d)", removed);
     return removed;
+}
+
+namespace
+{
+/// A store read under the pack lock, which also keeps the flash awake while it's used
+class LockedStore : public FontStore
+{
+  public:
+    LockedStore(std::unique_ptr<FontStore> inner, bool inFlash) : inner(std::move(inner)), inFlash(inFlash) {}
+    uint32_t size() const override { return inner->size(); }
+    bool read(uint32_t offset, void *buf, uint32_t len) override
+    {
+        concurrency::LockGuard g(&packLock());
+        if (inFlash)
+            touchFlash();
+        return inner->read(offset, buf, len);
+    }
+
+  private:
+    std::unique_ptr<FontStore> inner;
+    bool inFlash;
+};
+} // namespace
+
+std::unique_ptr<FontStore> openInstalled(const char *path)
+{
+    concurrency::LockGuard g(&packLock());
+    if (FlashSlots *s = slots()) {
+        touchFlash();
+        if (!flashIdle)
+            flashIdle = new FlashIdle();
+        const int i = s->find(baseName(path));
+        FlashSlots::Info in;
+        if (i >= 0 && s->info(i, in))
+            return std::unique_ptr<FontStore>(
+                new LockedStore(std::unique_ptr<FontStore>(new SlotFontStore(s->device(), s->packAddr(i), in.size)), true));
+    }
+    std::unique_ptr<FileFontStore> file(new FileFontStore());
+    if (!file->open(path))
+        return nullptr;
+    return std::unique_ptr<FontStore>(new LockedStore(std::move(file), false));
 }
 
 namespace

@@ -74,6 +74,22 @@ class VirtualKeyboard
     void insertCharacter(char c);
     void deleteCharacter();
     void submitText();
+
+    // Stroke input (五笔画), with a stroke dictionary and font packs installed: a second layout. In letter mode the ';'
+    // key shows 筆 and switches to it (a long press still types ';'); its top row has the strokes, the wildcard, the
+    // candidate pages and EN (back to letters), then two rows of candidates and a row of CJK punctuation
+    bool strokesAvailable = false;
+    bool strokeMode = false;
+    int candidatePage = 0; // pages of kCandidatesPerPage
+
+    bool handleStrokePress(bool isLongPress); // true when the stroke layout took the press
+    void pickCandidate(int index);
+    bool insertText(const std::string &text); // whole or not at all, within the length limit
+    std::string keyLabel(int row, int col);   // a key's label in the current layout ("" for none)
+    void drawLabeledKey(OLEDDisplay *display, const std::string &keyText, bool isAction, bool selected, int16_t x, int16_t y,
+                        uint8_t width, uint8_t height, bool isLastCol);
+    int textWidth(OLEDDisplay *display, const std::string &s); // through the font packs when there are any
+    void drawText(OLEDDisplay *display, int x, int y, const std::string &s);
 };
 
 } // namespace graphics

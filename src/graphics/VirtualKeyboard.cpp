@@ -4,12 +4,30 @@
 #include "graphics/Screen.h"
 #include "graphics/ScreenFonts.h"
 #include "graphics/SharedUIDisplay.h"
+#include "graphics/fontpack/FontPacks.h" // defines HAS_FONTPACKS
 #include "main.h"
+#include "meshUtils.h"
 #include <Arduino.h>
 #include <vector>
+#if HAS_FONTPACKS
+#include "WaypointUtils.h" // utf8FromCodepoint
+#include "graphics/EmoteRenderer.h"
+#include "graphics/emotes.h"
+#include "graphics/fontpack/StrokeInput.h"
+#endif
 
 namespace graphics
 {
+
+#if HAS_FONTPACKS
+namespace
+{
+constexpr int kCandidatesPerPage = 20; // two rows of 10
+// Labels the built-in font or a CJK pack has (‹ › … aren't in either)
+const char *const kStrokeRow[] = {"一", "丨", "丿", "丶", "乙", "*", "<", ">", "EN"};
+const char *const kPunctRow[] = {"，", "。", "？", "！", "、", "：", "；", "「", "」", "～"};
+} // namespace
+#endif
 
 VirtualKeyboard::VirtualKeyboard() : cursorRow(0), cursorCol(0), lastActivityTime(millis())
 {
@@ -17,6 +35,9 @@ VirtualKeyboard::VirtualKeyboard() : cursorRow(0), cursorCol(0), lastActivityTim
     // Set cursor to H(2, 5)
     cursorRow = 2;
     cursorCol = 5;
+#if HAS_FONTPACKS
+    strokesAvailable = StrokeInput::available();
+#endif
 }
 
 VirtualKeyboard::~VirtualKeyboard() {}
@@ -172,13 +193,17 @@ void VirtualKeyboard::draw(OLEDDisplay *display, int16_t offsetX, int16_t offset
     for (int row = 0; row < KEYBOARD_ROWS; row++) {
         for (int col = 0; col < KEYBOARD_COLS; col++) {
             const VirtualKey &k = keyboard[row][col];
-            if (k.character != 0 || k.type != VK_CHAR) {
-                const bool isLastCol = (col == KEYBOARD_COLS - 1);
-                int x = colX[col];
-                int w = colW[col];
-                int y = offsetY + keyboardStartY + row * cellH;
-                int h = cellH;
-                bool selected = (row == cursorRow && col == cursorCol);
+            const bool isLastCol = (col == KEYBOARD_COLS - 1);
+            int x = colX[col];
+            int w = colW[col];
+            int y = offsetY + keyboardStartY + row * cellH;
+            int h = cellH;
+            bool selected = (row == cursorRow && col == cursorCol);
+            if (strokeMode && !isLastCol) {
+                std::string label = keyLabel(row, col);
+                if (!label.empty())
+                    drawLabeledKey(display, label, false, selected, x, y, (uint8_t)w, (uint8_t)h, false);
+            } else if (k.character != 0 || k.type != VK_CHAR) {
                 drawKey(display, k, selected, x, y, (uint8_t)w, (uint8_t)h, isLastCol);
             }
         }
@@ -197,9 +222,20 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
     // Header uses the standard small (which may be larger on big screens)
     display->setFont(FONT_SMALL);
     int headerHeight = 0;
-    if (!headerText.empty()) {
+    std::string header = headerText;
+#if HAS_FONTPACKS
+    // Stroke mode: the strokes typed so far after the header
+    if (strokeMode) {
+        header += header.empty() ? "筆 " : "  筆 ";
+        for (int i = 0; i < StrokeInput::strokeCount(); i++) {
+            uint8_t st = StrokeInput::strokeAt(i);
+            header += (st >= 1 && st <= 6) ? kStrokeRow[st - 1] : "";
+        }
+    }
+#endif
+    if (!header.empty()) {
         // Draw header and reserve exact font height (plus a tighter gap) to maximize input area
-        display->drawString(offsetX + 2, offsetY, headerText.c_str());
+        drawText(display, offsetX + 2, offsetY, header);
         if (screenHeight <= 64) {
             headerHeight = FONT_HEIGHT_SMALL - 2; // 11px
         } else {
@@ -254,17 +290,19 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
         {
             std::string remaining = inputText;
             while (!remaining.empty()) {
-                int bestLen = 0;
-                for (int len = 1; len <= (int)remaining.size(); ++len) {
-                    int w = display->getStringWidth(remaining.substr(0, len).c_str());
-                    if (w <= maxTextWidth)
-                        bestLen = len;
-                    else
+                // Whole UTF-8 characters: a CJK character is 3 bytes
+                size_t bestLen = 0;
+                size_t len = 0;
+                while (len < remaining.size()) {
+                    size_t next = utf8NextBoundary(remaining.c_str(), remaining.size(), len);
+                    if (textWidth(display, remaining.substr(0, next)) > maxTextWidth)
                         break;
+                    bestLen = next;
+                    len = next;
                 }
                 if (bestLen == 0) {
                     // At least show one character to make progress
-                    bestLen = 1;
+                    bestLen = utf8NextBoundary(remaining.c_str(), remaining.size(), 0);
                 }
                 lines.emplace_back(remaining.substr(0, bestLen));
                 remaining.erase(0, bestLen);
@@ -300,8 +338,8 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
 
         for (int i = 0; i < linesToShow; ++i) {
             const std::string &chunk = lines[startIndex + i];
-            display->drawString(textX, lineY, chunk.c_str());
-            caretX = textX + display->getStringWidth(chunk.c_str());
+            drawText(display, textX, lineY, chunk);
+            caretX = textX + textWidth(display, chunk);
             caretY = lineY;
             lineY += lineStep;
         }
@@ -328,27 +366,27 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
         }
     } else {
         std::string displayText = inputText;
-        int textW = display->getStringWidth(displayText.c_str());
+        int textW = textWidth(display, displayText);
         std::string scrolled = displayText;
         if (textW > maxTextWidth) {
-            // Trim from the left until it fits
+            // Trim whole characters from the left until it fits
             while (textW > maxTextWidth && !scrolled.empty()) {
-                scrolled.erase(0, 1);
-                textW = display->getStringWidth(scrolled.c_str());
+                scrolled.erase(0, utf8NextBoundary(scrolled.c_str(), scrolled.size(), 0));
+                textW = textWidth(display, scrolled);
             }
             // Add leading ellipsis and ensure it still fits
             if (scrolled != displayText) {
                 scrolled = "..." + scrolled;
-                textW = display->getStringWidth(scrolled.c_str());
+                textW = textWidth(display, scrolled);
                 // If adding ellipsis causes overflow, trim more after the ellipsis
                 while (textW > maxTextWidth && scrolled.size() > 3) {
-                    scrolled.erase(3, 1); // remove chars after the ellipsis
-                    textW = display->getStringWidth(scrolled.c_str());
+                    scrolled.erase(3, utf8NextBoundary(scrolled.c_str() + 3, scrolled.size() - 3, 0));
+                    textW = textWidth(display, scrolled);
                 }
             }
         } else {
             // Keep textW in sync with what we draw
-            textW = display->getStringWidth(scrolled.c_str());
+            textW = textWidth(display, scrolled);
         }
 
         int textY;
@@ -370,7 +408,7 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
         }
 
         if (!scrolled.empty()) {
-            display->drawString(textX, textY, scrolled.c_str());
+            drawText(display, textX, textY, scrolled);
         }
 
         int cursorX = textX + textW;
@@ -412,10 +450,8 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
 void VirtualKeyboard::drawKey(OLEDDisplay *display, const VirtualKey &key, bool selected, int16_t x, int16_t y, uint8_t width,
                               uint8_t height, bool isLastCol)
 {
-    // Draw key content
+    // The key's label, drawn by drawLabeledKey
     display->setFont(FONT_SMALL);
-    const int fontH = FONT_HEIGHT_SMALL;
-    // Build label and metrics first
     std::string keyText;
     if (key.type == VK_BACKSPACE || key.type == VK_ENTER || key.type == VK_SPACE || key.type == VK_ESC) {
         // Keep literal text labels for the action keys on the rightmost column
@@ -434,9 +470,21 @@ void VirtualKeyboard::drawKey(OLEDDisplay *display, const VirtualKey &key, bool 
         if (key.type == VK_CHAR && key.character == '?') {
             keyText = "?/";
         }
+        // With a stroke dictionary, ';' switches to the strokes (a long press still types ';')
+        if (strokesAvailable && key.type == VK_CHAR && key.character == ';') {
+            keyText = "筆";
+        }
     }
+    const bool isAction = (key.type == VK_BACKSPACE || key.type == VK_ENTER || key.type == VK_SPACE || key.type == VK_ESC);
+    drawLabeledKey(display, keyText, isAction, selected, x, y, width, height, isLastCol);
+}
 
-    int textWidth = display->getStringWidth(keyText.c_str());
+void VirtualKeyboard::drawLabeledKey(OLEDDisplay *display, const std::string &keyText, bool isAction, bool selected, int16_t x,
+                                     int16_t y, uint8_t width, uint8_t height, bool isLastCol)
+{
+    display->setFont(FONT_SMALL);
+    const int fontH = FONT_HEIGHT_SMALL;
+    int textWidth = this->textWidth(display, keyText);
     // Label alignment
     // - Rightmost action column: right-align text with a small right padding (~2px) so it hugs screen edge neatly.
     // - Other keys: center horizontally; use ceil-style rounding to avoid appearing left-biased on odd widths.
@@ -454,7 +502,6 @@ void VirtualKeyboard::drawKey(OLEDDisplay *display, const VirtualKey &key, bool 
     int contentH = height;
     if (selected) {
         display->setColor(WHITE);
-        bool isAction = (key.type == VK_BACKSPACE || key.type == VK_ENTER || key.type == VK_SPACE || key.type == VK_ESC);
 
         if (display->getHeight() <= 64 && !isAction) {
             display->fillRect(x, y, width, height);
@@ -509,7 +556,7 @@ void VirtualKeyboard::drawKey(OLEDDisplay *display, const VirtualKey &key, bool 
 #ifdef MUZI_BASE // Correct issue with character vertical position on MUZI_BASE
     centeredTextY -= 2;
 #endif
-    display->drawString(textX, centeredTextY, keyText.c_str());
+    drawText(display, textX, centeredTextY, keyText);
 }
 
 char VirtualKeyboard::getCharForKey(const VirtualKey &key, bool isLongPress)
@@ -594,6 +641,8 @@ void VirtualKeyboard::moveCursorRight()
 void VirtualKeyboard::handlePress()
 {
     resetTimeout(); // Reset timeout on any input activity
+    if (handleStrokePress(false))
+        return;
 
     const VirtualKey &key = keyboard[cursorRow][cursorCol];
 
@@ -635,6 +684,8 @@ void VirtualKeyboard::handlePress()
 void VirtualKeyboard::handleLongPress()
 {
     resetTimeout(); // Reset timeout on any input activity
+    if (strokeMode && handleStrokePress(true))
+        return;
 
     const VirtualKey &key = keyboard[cursorRow][cursorCol];
 
@@ -682,16 +733,151 @@ void VirtualKeyboard::handleLongPress()
 
 void VirtualKeyboard::insertCharacter(char c)
 {
-    if (inputText.length() < 160) { // Reasonable text length limit
-        inputText += c;
-    }
+    insertText(std::string(1, c));
+}
+
+bool VirtualKeyboard::insertText(const std::string &text)
+{
+    if (inputText.length() + text.length() > 160) // Reasonable text length limit
+        return false;
+    inputText += text;
+    return true;
 }
 
 void VirtualKeyboard::deleteCharacter()
 {
+    // The whole last character (a CJK character is 3 bytes)
     if (!inputText.empty()) {
-        inputText.pop_back();
+        inputText.erase(utf8PrevBoundary(inputText.c_str(), inputText.size(), inputText.size()));
     }
+}
+
+int VirtualKeyboard::textWidth(OLEDDisplay *display, const std::string &s)
+{
+#if HAS_FONTPACKS
+    return EmoteRenderer::measureStringWithEmotes(display, s);
+#else
+    return display->getStringWidth(s.c_str());
+#endif
+}
+
+void VirtualKeyboard::drawText(OLEDDisplay *display, int x, int y, const std::string &s)
+{
+#if HAS_FONTPACKS
+    EmoteRenderer::drawStringWithEmotes(display, x, y, s, FONT_HEIGHT_SMALL, emotes, numEmotes, 1, false);
+#else
+    display->drawString(x, y, s.c_str());
+#endif
+}
+
+std::string VirtualKeyboard::keyLabel(int row, int col)
+{
+#if HAS_FONTPACKS
+    if (!strokeMode || col >= KEYBOARD_COLS - 1)
+        return "";
+    if (row == 0)
+        return col < (int)(sizeof(kStrokeRow) / sizeof(kStrokeRow[0])) ? kStrokeRow[col] : "";
+    if (row == 3)
+        return kPunctRow[col];
+    uint32_t cp = StrokeInput::candidateAt(candidatePage * kCandidatesPerPage + (row - 1) * 10 + col);
+    return cp ? WaypointUtils::utf8FromCodepoint(cp) : "";
+#else
+    (void)row;
+    (void)col;
+    return "";
+#endif
+}
+
+void VirtualKeyboard::pickCandidate(int index)
+{
+#if HAS_FONTPACKS
+    // Only when it fits: otherwise the strokes stay, and the user can delete text to make room
+    uint32_t cp = StrokeInput::candidateAt(index);
+    if (cp && insertText(WaypointUtils::utf8FromCodepoint(cp))) {
+        StrokeInput::pickAt(index);
+        candidatePage = 0;
+        // Back to the first stroke for the next character
+        cursorRow = 0;
+        cursorCol = 0;
+    }
+#else
+    (void)index;
+#endif
+}
+
+bool VirtualKeyboard::handleStrokePress(bool isLongPress)
+{
+#if HAS_FONTPACKS
+    const VirtualKey &key = keyboard[cursorRow][cursorCol];
+    if (!strokeMode) {
+        // Letters: the ';' key goes to the strokes; a long press still types ';'
+        if (strokesAvailable && !isLongPress && key.type == VK_CHAR && key.character == ';') {
+            strokeMode = true;
+            candidatePage = 0;
+            StrokeInput::reset();
+            cursorRow = 0;
+            cursorCol = 0;
+            return true;
+        }
+        return false;
+    }
+
+    const bool composing = StrokeInput::strokeCount() > 0;
+    if (cursorCol == KEYBOARD_COLS - 1) {
+        // The action keys: while strokes are typed, BACK removes one, ENTER and SPACE take the first candidate shown,
+        // ESC clears them; otherwise they act as in letter mode
+        if (!composing)
+            return false;
+        switch (key.type) {
+        case VK_BACKSPACE:
+            StrokeInput::removeStroke();
+            candidatePage = 0;
+            return true;
+        case VK_ENTER:
+        case VK_SPACE:
+            pickCandidate(candidatePage * kCandidatesPerPage);
+            return true;
+        case VK_ESC:
+            StrokeInput::reset();
+            candidatePage = 0;
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    switch (cursorRow) {
+    case 0:
+        if (cursorCol <= 5) {
+            static const uint8_t stroke[] = {1, 2, 3, 4, 5, StrokeInput::kAnyStroke}; // 横 竖 撇 点 折, any
+            StrokeInput::addStroke(stroke[cursorCol]);
+            candidatePage = 0;
+        } else if (cursorCol == 6) {
+            if (candidatePage > 0)
+                candidatePage--;
+        } else if (cursorCol == 7) {
+            if ((candidatePage + 1) * kCandidatesPerPage < StrokeInput::candidateCount())
+                candidatePage++;
+        } else if (cursorCol == 8) {
+            // EN: back to letters, on the 筆 key
+            strokeMode = false;
+            StrokeInput::reset();
+            cursorRow = 2;
+            cursorCol = 9;
+        }
+        return true;
+    case 1:
+    case 2:
+        pickCandidate(candidatePage * kCandidatesPerPage + (cursorRow - 1) * 10 + cursorCol);
+        return true;
+    default:
+        insertText(kPunctRow[cursorCol]);
+        return true;
+    }
+#else
+    (void)isLongPress;
+    return false;
+#endif
 }
 
 void VirtualKeyboard::submitText()
