@@ -76,8 +76,9 @@ class VirtualKeyboard
     void submitText();
 
     // Stroke input (五笔画), with a stroke dictionary and font packs installed: a second layout. In letter mode the ';'
-    // key shows 筆 and switches to it (a long press still types ';'); its top row has the strokes, the wildcard, the
-    // candidate pages and EN (back to letters), then two rows of candidates and a row of CJK punctuation
+    // key shows 筆 and switches to it (a long press still types ';'). As on a phone's stroke keypad, the strokes and the
+    // wildcard make a 3 x 2 pad on the left, with the candidate pages and EN (back to letters) under it; three rows of
+    // seven candidates beside it, and a row of CJK punctuation at the bottom
     bool strokesAvailable = false;
     bool strokeMode = false;
     int candidatePage = 0; // pages of kCandidatesPerPage

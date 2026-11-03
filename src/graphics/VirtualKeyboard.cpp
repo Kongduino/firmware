@@ -22,9 +22,14 @@ namespace graphics
 #if HAS_FONTPACKS
 namespace
 {
-constexpr int kCandidatesPerPage = 20; // two rows of 10
+// Columns 0 to 2 of rows 0 to 2: the stroke pad; columns 3 to 9 of the same rows: the candidates
+constexpr int kPadCols = 3;
+constexpr int kCandidateCols = 7;
+constexpr int kCandidateRows = 3;
+constexpr int kCandidatesPerPage = kCandidateRows * kCandidateCols;
 // Labels the built-in font or a CJK pack has (‹ › … aren't in either)
-const char *const kStrokeRow[] = {"一", "丨", "丿", "丶", "乙", "*", "<", ">", "EN"};
+const char *const kStrokes[] = {"一", "丨", "丿", "丶", "乙", "*"}; // 横 竖 撇 点 折, any: strokes 1 to 6
+const char *const kStrokePad[kCandidateRows][kPadCols] = {{"一", "丨", "丿"}, {"丶", "乙", "*"}, {"<", ">", "EN"}};
 const char *const kPunctRow[] = {"，", "。", "？", "！", "、", "：", "；", "「", "」", "～"};
 } // namespace
 #endif
@@ -229,7 +234,7 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
         header += header.empty() ? "筆 " : "  筆 ";
         for (int i = 0; i < StrokeInput::strokeCount(); i++) {
             uint8_t st = StrokeInput::strokeAt(i);
-            header += (st >= 1 && st <= 6) ? kStrokeRow[st - 1] : "";
+            header += (st >= 1 && st <= 6) ? kStrokes[st - 1] : "";
         }
     }
 #endif
@@ -775,11 +780,11 @@ std::string VirtualKeyboard::keyLabel(int row, int col)
 #if HAS_FONTPACKS
     if (!strokeMode || col >= KEYBOARD_COLS - 1)
         return "";
-    if (row == 0)
-        return col < (int)(sizeof(kStrokeRow) / sizeof(kStrokeRow[0])) ? kStrokeRow[col] : "";
-    if (row == 3)
+    if (row >= kCandidateRows)
         return kPunctRow[col];
-    uint32_t cp = StrokeInput::candidateAt(candidatePage * kCandidatesPerPage + (row - 1) * 10 + col);
+    if (col < kPadCols)
+        return kStrokePad[row][col];
+    uint32_t cp = StrokeInput::candidateAt(candidatePage * kCandidatesPerPage + row * kCandidateCols + col - kPadCols);
     return cp ? WaypointUtils::utf8FromCodepoint(cp) : "";
 #else
     (void)row;
@@ -846,34 +851,33 @@ bool VirtualKeyboard::handleStrokePress(bool isLongPress)
         }
     }
 
-    switch (cursorRow) {
-    case 0:
-        if (cursorCol <= 5) {
-            static const uint8_t stroke[] = {1, 2, 3, 4, 5, StrokeInput::kAnyStroke}; // 横 竖 撇 点 折, any
-            StrokeInput::addStroke(stroke[cursorCol]);
-            candidatePage = 0;
-        } else if (cursorCol == 6) {
-            if (candidatePage > 0)
-                candidatePage--;
-        } else if (cursorCol == 7) {
-            if ((candidatePage + 1) * kCandidatesPerPage < StrokeInput::candidateCount())
-                candidatePage++;
-        } else if (cursorCol == 8) {
-            // EN: back to letters, on the 筆 key
-            strokeMode = false;
-            StrokeInput::reset();
-            cursorRow = 2;
-            cursorCol = 9;
-        }
-        return true;
-    case 1:
-    case 2:
-        pickCandidate(candidatePage * kCandidatesPerPage + (cursorRow - 1) * 10 + cursorCol);
-        return true;
-    default:
+    if (cursorRow >= kCandidateRows) {
         insertText(kPunctRow[cursorCol]);
         return true;
     }
+    if (cursorCol >= kPadCols) {
+        pickCandidate(candidatePage * kCandidatesPerPage + cursorRow * kCandidateCols + cursorCol - kPadCols);
+        return true;
+    }
+    if (cursorRow < 2) {
+        // The pad: 一 丨 丿 over 丶 乙 *
+        static const uint8_t stroke[] = {1, 2, 3, 4, 5, StrokeInput::kAnyStroke}; // 横 竖 撇 点 折, any
+        StrokeInput::addStroke(stroke[cursorRow * kPadCols + cursorCol]);
+        candidatePage = 0;
+    } else if (cursorCol == 0) {
+        if (candidatePage > 0)
+            candidatePage--;
+    } else if (cursorCol == 1) {
+        if ((candidatePage + 1) * kCandidatesPerPage < StrokeInput::candidateCount())
+            candidatePage++;
+    } else {
+        // EN: back to letters, on the 筆 key
+        strokeMode = false;
+        StrokeInput::reset();
+        cursorRow = 2;
+        cursorCol = 9;
+    }
+    return true;
 #else
     (void)isLongPress;
     return false;
