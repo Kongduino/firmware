@@ -32,7 +32,8 @@ class TCA8418KeyboardBase
         FUNCTION_F3 = 0xF3,
         FUNCTION_F4 = 0xF4,
         FUNCTION_F5 = 0xF5,
-        STROKE_MODE = 0x8E
+        STROKE_MODE = 0x8E,
+        MIC = 0x8D
     };
 
     typedef uint8_t (*i2c_com_fptr_t)(uint8_t dev_addr, uint8_t reg_addr, uint8_t *data, uint8_t len);

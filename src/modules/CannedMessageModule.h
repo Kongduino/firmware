@@ -1,6 +1,7 @@
 #pragma once
 #if HAS_SCREEN
 #include "ProtobufModule.h"
+#include "graphics/fontpack/hangul.h"
 #include "input/InputBroker.h"
 
 // ============================
@@ -202,6 +203,16 @@ class CannedMessageModule : public SinglePortModule, public Observable<const UIF
     void pickStrokeCandidate(int i);
     void drawStrokeInput(OLEDDisplay *display, int16_t x, int16_t y);
     void freetextChanged(); // redraws the compose screen after an edit
+
+    // === Korean input (나랏글, with a Hangul font pack) ===
+    bool hangulMode = false; // Alt+Space: the keys printed with the phone keypad's digits type 나랏글
+    hg_state hangul{};
+    String hangulShown;                              // the syllable being composed, as it stands before the cursor
+    bool handleHangulInput(const InputEvent *event); // true when the event was a Korean-input key
+    bool hangulKey(hg_key key);
+    void hangulShow(const String &done); // puts what a key finished, then what's being composed, at the cursor
+    void hangulCommit();                 // the syllable being composed stays as it is
+    void drawHangulInput(OLEDDisplay *display, int16_t x, int16_t y);
     // Opens the on-screen keyboard prompt for the current destination.
     // Returns false when this device has no on-screen keyboard.
     bool showOnScreenKeyboard();
