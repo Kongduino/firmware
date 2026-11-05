@@ -1,6 +1,7 @@
 #pragma once
 
 #include "configuration.h"
+#include "graphics/fontpack/hangul.h"
 #include <OLEDDisplay.h>
 #include <functional>
 #include <string>
@@ -48,6 +49,7 @@ class VirtualKeyboard
     static const uint8_t KEY_WIDTH = 9;
     static const uint8_t KEY_HEIGHT = 9;        // Compressed to fit 4 rows on 64px displays
     static const uint8_t KEYBOARD_START_Y = 26; // Start just below input box bottom
+    static constexpr size_t kMaxTextBytes = 160;
 
     VirtualKey keyboard[KEYBOARD_ROWS][KEYBOARD_COLS];
 
@@ -75,9 +77,17 @@ class VirtualKeyboard
     void deleteCharacter();
     void submitText();
 
-    // Stroke input (五笔画), with a stroke dictionary and font packs installed: a second layout. In letter mode the ';'
-    // key shows 筆 and switches to it (a long press still types ';'). As on a phone's stroke keypad, the strokes and the
-    // wildcard make a 3 x 2 pad on the left, with the candidate pages and EN (back to letters) under it; three rows of
+    // Input modes besides the letters, each when what it needs is installed: strokes (筆) and Korean (한). In letter mode
+    // the ';' key shows the next mode and switches to it (a long press still types ';'); each mode has a key for the next
+    // one, back to the letters (EN)
+    enum InputMode { MODE_LETTERS, MODE_STROKES, MODE_HANGUL };
+    InputMode nextMode(InputMode from) const;
+    static const char *modeLabel(InputMode mode);
+    void enterMode(InputMode mode);
+    bool handleModeKey(); // true when the press was the letters' mode key
+
+    // Stroke input (五笔画), with a stroke dictionary and font packs installed. As on a phone's stroke keypad, the strokes
+    // and the wildcard make a 3 x 2 pad on the left, with the candidate pages and the mode key under it; three rows of
     // seven candidates beside it, and a row of CJK punctuation at the bottom
     bool strokesAvailable = false;
     bool strokeMode = false;
@@ -86,6 +96,20 @@ class VirtualKeyboard
     bool handleStrokePress(bool isLongPress); // true when the stroke layout took the press
     void pickCandidate(int index);
     bool isEmptyCandidate(int row, int col); // a candidate cell of the stroke layout with no candidate in it
+
+    // Korean (나랏글), with a pack that has Hangul: the phone's 12 keys, three cells wide (ㄱ ㄴ ㅏㅓ / ㄹ ㅁ ㅗㅜ / ㅅ ㅇ ㅣ /
+    // 획추가 ㅡ 쌍자음), then a column with the mode key and punctuation. The syllable being composed is shown at the end
+    // of the text, and finished by a space, ENTER, punctuation or the mode key
+    bool hangulAvailable = false;
+    bool hangulMode = false;
+    hg_state hangul{};
+
+    bool handleHangulPress(bool isLongPress); // true when the Korean layout took the press
+    void commitHangul();                      // the syllable being composed goes into the text
+    std::string composingText() const;
+    std::string shownText() const;        // the text, and the syllable being composed
+    void stepHangulCursor(int direction); // left or right, a whole key at a time
+
     bool insertText(const std::string &text); // whole or not at all, within the length limit
     std::string keyLabel(int row, int col);   // a key's label in the current layout ("" for none)
     void drawLabeledKey(OLEDDisplay *display, const std::string &keyText, bool isAction, bool selected, int16_t x, int16_t y,

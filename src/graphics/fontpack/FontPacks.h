@@ -14,6 +14,18 @@
 #define HAS_FONTPACKS 0
 #endif
 
+// Input methods built on the font packs, each in a build of its own choosing: stroke input (五笔画, StrokeInput: the
+// default) and Korean (나랏글, hangul.h: -DFONTPACK_INPUT_HANGUL=1). A Korean build leaves the strokes out with
+// -DFONTPACK_INPUT_STROKES=0
+#ifndef FONTPACK_INPUT_STROKES
+#define FONTPACK_INPUT_STROKES 1
+#endif
+#ifndef FONTPACK_INPUT_HANGUL
+#define FONTPACK_INPUT_HANGUL 0
+#endif
+#define HAS_STROKE_INPUT (HAS_FONTPACKS && FONTPACK_INPUT_STROKES)
+#define HAS_HANGUL_INPUT (HAS_FONTPACKS && FONTPACK_INPUT_HANGUL)
+
 #if HAS_FONTPACKS
 
 #include "graphics/fontpack/FontStore.h"
@@ -82,6 +94,9 @@ inline bool handles(uint32_t cp)
 {
     return !builtinCovers(cp) && available();
 }
+
+/// True when an installed pack has a glyph for the code point
+bool hasGlyph(uint32_t cp);
 
 /// The pixels a code point takes on the line: its glyph's advance, or the width of the box drawn when no pack has it
 int advance(uint32_t cp);

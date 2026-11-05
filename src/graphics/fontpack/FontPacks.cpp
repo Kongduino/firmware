@@ -378,6 +378,7 @@ fp_result checkPack(FontStore &store, const char *label)
 /// Checks what was received: a pack (structure and CRC), or the stroke dictionary (its reader's check)
 bool checkReceived(FontStore &store, const char *label)
 {
+#if HAS_STROKE_INPUT
     if (strcmp(rxPackPath, kStrokeDictPath) != 0)
         return checkPack(store, label) == FP_OK;
     sd_dict d;
@@ -388,6 +389,9 @@ bool checkReceived(FontStore &store, const char *label)
     LOG_INFO("FontPacks: %s checked in %u ms: %s", label, (unsigned)(millis() - start),
              r == SD_OK ? "OK" : "not a valid stroke dictionary");
     return r == SD_OK;
+#else
+    return checkPack(store, label) == FP_OK;
+#endif
 }
 
 /// A received file pack: checks the partial file, then puts it in place of the pack of that name
@@ -449,6 +453,12 @@ bool installSlot()
 bool beginReceive(const char *packPath)
 {
     abortReceive();
+#if !HAS_STROKE_INPUT
+    if (strcmp(packPath, kStrokeDictPath) == 0) {
+        LOG_WARN("FontPacks: no stroke input in this build, %s refused", packPath);
+        return false;
+    }
+#endif
     snprintf(rxPackPath, sizeof(rxPackPath), "%s", packPath);
     rxSize = 0;
     if (FlashSlots *s = slots()) {
@@ -513,8 +523,10 @@ bool endReceive()
     bool ok = false;
     // The dictionary in use is closed before it's replaced (StrokeInput opens it again); not under the pack lock, which
     // its reads take
+#if HAS_STROKE_INPUT
     if (rx != Rx::None && strcmp(rxPackPath, kStrokeDictPath) == 0)
         StrokeInput::close();
+#endif
     if (rx == Rx::Slot) {
         ok = installSlot();
     } else if (rx == Rx::File) {
@@ -544,8 +556,10 @@ void abortReceive()
 
 bool remove(const char *packPath)
 {
+#if HAS_STROKE_INPUT
     if (strcmp(packPath, kStrokeDictPath) == 0)
         StrokeInput::close(); // not under the pack lock, which its reads take
+#endif
     concurrency::LockGuard g(&packLock());
     closePacks();
     bool ok = false;
@@ -673,6 +687,12 @@ bool builtinCovers(uint32_t cp)
         return true;
 #endif
     return false;
+}
+
+bool hasGlyph(uint32_t cp)
+{
+    concurrency::LockGuard g(&packLock());
+    return ensureLoaded() && lookup(cp).packIndex >= 0;
 }
 
 int advance(uint32_t cp)
