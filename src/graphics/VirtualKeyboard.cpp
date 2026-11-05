@@ -19,7 +19,7 @@
 namespace graphics
 {
 
-#if HAS_FONTPACKS
+#if HAS_STROKE_INPUT
 namespace
 {
 // Columns 0 to 2 of rows 0 to 2: the stroke pad; columns 3 to 9 of the same rows: the candidates
@@ -34,15 +34,32 @@ const char *const kPunctRow[] = {"，", "。", "？", "！", "、", "：", "；"
 } // namespace
 #endif
 
+namespace
+{
+// The Korean layout: the 나랏글 keys in hg_key order, three cells each, then column 9 (the mode key, punctuation)
+constexpr int kHangulKeyCols = 3;
+constexpr int kHangulSideCol = 9;
+const char *const kHangulKeys[4][3] = {
+    {"ㄱ", "ㄴ", "ㅏㅓ"}, {"ㄹ", "ㅁ", "ㅗㅜ"}, {"ㅅ", "ㅇ", "ㅣ"}, {"획추가", "ㅡ", "쌍자음"}};
+const char *const kHangulKeysShort[3] = {"획", "ㅡ", "쌍"}; // the bottom row, on narrow screens
+const char *const kHangulSide[4] = {"", ".", ",", "?"};     // under the mode key
+// Room kept in the text for what a key may finish and what stays composed
+constexpr size_t kHangulReserve = 3 * (HG_MAX_OUT + 2);
+} // namespace
+
 VirtualKeyboard::VirtualKeyboard() : cursorRow(0), cursorCol(0), lastActivityTime(millis())
 {
     initializeKeyboard();
     // Set cursor to H(2, 5)
     cursorRow = 2;
     cursorCol = 5;
-#if HAS_FONTPACKS
+#if HAS_STROKE_INPUT
     strokesAvailable = StrokeInput::available();
 #endif
+#if HAS_HANGUL_INPUT
+    hangulAvailable = FontPacks::hasGlyph(0xAC00) && FontPacks::hasGlyph(0x3131); // 가, ㄱ
+#endif
+    hg_init(&hangul);
 }
 
 VirtualKeyboard::~VirtualKeyboard() {}
@@ -204,7 +221,17 @@ void VirtualKeyboard::draw(OLEDDisplay *display, int16_t offsetX, int16_t offset
             int y = offsetY + keyboardStartY + row * cellH;
             int h = cellH;
             bool selected = (row == cursorRow && col == cursorCol);
-            if (strokeMode && !isLastCol) {
+            if (hangulMode && !isLastCol) {
+                // Three cells per key, then the side column
+                if (col % kHangulKeyCols != 0 && col != kHangulSideCol)
+                    continue;
+                if (col < kHangulSideCol)
+                    w = colX[col + kHangulKeyCols] - x;
+                std::string label = keyLabel(row, col);
+                if (row == 3 && col < kHangulSideCol && textWidth(display, label) > w - 2)
+                    label = kHangulKeysShort[col / kHangulKeyCols];
+                drawLabeledKey(display, label, false, selected, x, y, (uint8_t)w, (uint8_t)h, false);
+            } else if (strokeMode && !isLastCol) {
                 std::string label = keyLabel(row, col);
                 if (!label.empty())
                     drawLabeledKey(display, label, false, selected, x, y, (uint8_t)w, (uint8_t)h, false);
@@ -228,7 +255,9 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
     display->setFont(FONT_SMALL);
     int headerHeight = 0;
     std::string header = headerText;
-#if HAS_FONTPACKS
+    if (hangulMode)
+        header += header.empty() ? "한" : "  한";
+#if HAS_STROKE_INPUT
     // Stroke mode: the strokes typed so far after the header
     if (strokeMode) {
         header += header.empty() ? "筆 " : "  筆 ";
@@ -293,7 +322,7 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
         // Wrap text greedily into lines that fit maxTextWidth
         std::vector<std::string> lines;
         {
-            std::string remaining = inputText;
+            std::string remaining = shownText();
             while (!remaining.empty()) {
                 // Whole UTF-8 characters: a CJK character is 3 bytes
                 size_t bestLen = 0;
@@ -370,7 +399,7 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
             display->drawVerticalLine(caretX, cursorTop, cursorH);
         }
     } else {
-        std::string displayText = inputText;
+        std::string displayText = shownText();
         int textW = textWidth(display, displayText);
         std::string scrolled = displayText;
         if (textW > maxTextWidth) {
@@ -475,9 +504,9 @@ void VirtualKeyboard::drawKey(OLEDDisplay *display, const VirtualKey &key, bool 
         if (key.type == VK_CHAR && key.character == '?') {
             keyText = "?/";
         }
-        // With a stroke dictionary, ';' switches to the strokes (a long press still types ';')
-        if (strokesAvailable && key.type == VK_CHAR && key.character == ';') {
-            keyText = "筆";
+        // With another input mode, ';' switches to it (a long press still types ';')
+        if (key.type == VK_CHAR && key.character == ';' && nextMode(MODE_LETTERS) != MODE_LETTERS) {
+            keyText = modeLabel(nextMode(MODE_LETTERS));
         }
     }
     const bool isAction = (key.type == VK_BACKSPACE || key.type == VK_ENTER || key.type == VK_SPACE || key.type == VK_ESC);
@@ -613,6 +642,10 @@ void VirtualKeyboard::moveCursorDown()
 void VirtualKeyboard::moveCursorLeft()
 {
     resetTimeout();
+    if (hangulMode) {
+        stepHangulCursor(-1);
+        return;
+    }
 
     if (cursorCol > 0) {
         cursorCol--;
@@ -632,6 +665,10 @@ void VirtualKeyboard::moveCursorLeft()
 void VirtualKeyboard::moveCursorRight()
 {
     resetTimeout();
+    if (hangulMode) {
+        stepHangulCursor(1);
+        return;
+    }
 
     if (cursorCol < KEYBOARD_COLS - 1) {
         cursorCol++;
@@ -651,7 +688,7 @@ void VirtualKeyboard::moveCursorRight()
 
 bool VirtualKeyboard::isEmptyCandidate(int row, int col)
 {
-#if HAS_FONTPACKS
+#if HAS_STROKE_INPUT
     if (!strokeMode || row >= kCandidateRows || col < kPadCols || col >= KEYBOARD_COLS - 1)
         return false;
     return candidatePage * kCandidatesPerPage + row * kCandidateCols + col - kPadCols >= StrokeInput::candidateCount();
@@ -665,7 +702,7 @@ bool VirtualKeyboard::isEmptyCandidate(int row, int col)
 void VirtualKeyboard::handlePress()
 {
     resetTimeout(); // Reset timeout on any input activity
-    if (handleStrokePress(false))
+    if (hangulMode ? handleHangulPress(false) : strokeMode ? handleStrokePress(false) : handleModeKey())
         return;
 
     const VirtualKey &key = keyboard[cursorRow][cursorCol];
@@ -708,7 +745,7 @@ void VirtualKeyboard::handlePress()
 void VirtualKeyboard::handleLongPress()
 {
     resetTimeout(); // Reset timeout on any input activity
-    if (strokeMode && handleStrokePress(true))
+    if ((strokeMode && handleStrokePress(true)) || (hangulMode && handleHangulPress(true)))
         return;
 
     const VirtualKey &key = keyboard[cursorRow][cursorCol];
@@ -762,7 +799,7 @@ void VirtualKeyboard::insertCharacter(char c)
 
 bool VirtualKeyboard::insertText(const std::string &text)
 {
-    if (inputText.length() + text.length() > 160) // Reasonable text length limit
+    if (inputText.length() + text.length() > kMaxTextBytes) // Reasonable text length limit
         return false;
     inputText += text;
     return true;
@@ -796,13 +833,20 @@ void VirtualKeyboard::drawText(OLEDDisplay *display, int x, int y, const std::st
 
 std::string VirtualKeyboard::keyLabel(int row, int col)
 {
-#if HAS_FONTPACKS
-    if (!strokeMode || col >= KEYBOARD_COLS - 1)
+    if (col >= KEYBOARD_COLS - 1)
+        return "";
+    if (hangulMode) {
+        if (col < kHangulSideCol)
+            return kHangulKeys[row][col / kHangulKeyCols];
+        return row == 0 ? modeLabel(nextMode(MODE_HANGUL)) : kHangulSide[row];
+    }
+#if HAS_STROKE_INPUT
+    if (!strokeMode)
         return "";
     if (row >= kCandidateRows)
         return kPunctRow[col];
     if (col < kPadCols)
-        return kStrokePad[row][col];
+        return row == 2 && col == 2 ? modeLabel(nextMode(MODE_STROKES)) : kStrokePad[row][col];
     uint32_t cp = StrokeInput::candidateAt(candidatePage * kCandidatesPerPage + row * kCandidateCols + col - kPadCols);
     return cp ? WaypointUtils::utf8FromCodepoint(cp) : "";
 #else
@@ -814,7 +858,7 @@ std::string VirtualKeyboard::keyLabel(int row, int col)
 
 void VirtualKeyboard::pickCandidate(int index)
 {
-#if HAS_FONTPACKS
+#if HAS_STROKE_INPUT
     // Only when it fits: otherwise the strokes stay, and the user can delete text to make room
     uint32_t cp = StrokeInput::candidateAt(index);
     if (cp && insertText(WaypointUtils::utf8FromCodepoint(cp))) {
@@ -831,20 +875,11 @@ void VirtualKeyboard::pickCandidate(int index)
 
 bool VirtualKeyboard::handleStrokePress(bool isLongPress)
 {
-#if HAS_FONTPACKS
+#if HAS_STROKE_INPUT
+    (void)isLongPress; // a long press acts as a press
     const VirtualKey &key = keyboard[cursorRow][cursorCol];
-    if (!strokeMode) {
-        // Letters: the ';' key goes to the strokes; a long press still types ';'
-        if (strokesAvailable && !isLongPress && key.type == VK_CHAR && key.character == ';') {
-            strokeMode = true;
-            candidatePage = 0;
-            StrokeInput::reset();
-            cursorRow = 0;
-            cursorCol = 0;
-            return true;
-        }
+    if (!strokeMode)
         return false;
-    }
 
     const bool composing = StrokeInput::strokeCount() > 0;
     if (cursorCol == KEYBOARD_COLS - 1) {
@@ -890,12 +925,144 @@ bool VirtualKeyboard::handleStrokePress(bool isLongPress)
         if ((candidatePage + 1) * kCandidatesPerPage < StrokeInput::candidateCount())
             candidatePage++;
     } else {
-        // EN: back to letters, on the 筆 key
-        strokeMode = false;
-        StrokeInput::reset();
+        // The mode key: the next input mode, or back to the letters
+        enterMode(nextMode(MODE_STROKES));
+    }
+    return true;
+#else
+    (void)isLongPress;
+    return false;
+#endif
+}
+
+bool VirtualKeyboard::handleModeKey()
+{
+    // Letters: the ';' key goes to the next input mode, when there's one (a long press still types ';')
+    const VirtualKey &key = keyboard[cursorRow][cursorCol];
+    if (key.type != VK_CHAR || key.character != ';' || nextMode(MODE_LETTERS) == MODE_LETTERS)
+        return false;
+    enterMode(nextMode(MODE_LETTERS));
+    return true;
+}
+
+VirtualKeyboard::InputMode VirtualKeyboard::nextMode(InputMode from) const
+{
+    if (from == MODE_LETTERS && strokesAvailable)
+        return MODE_STROKES;
+    if (from != MODE_HANGUL && hangulAvailable)
+        return MODE_HANGUL;
+    return MODE_LETTERS;
+}
+
+const char *VirtualKeyboard::modeLabel(InputMode mode)
+{
+    return mode == MODE_STROKES ? "筆" : mode == MODE_HANGUL ? "한" : "EN";
+}
+
+void VirtualKeyboard::enterMode(InputMode mode)
+{
+    commitHangul();
+#if HAS_STROKE_INPUT
+    StrokeInput::reset();
+#endif
+    candidatePage = 0;
+    strokeMode = mode == MODE_STROKES;
+    hangulMode = mode == MODE_HANGUL;
+    if (mode == MODE_LETTERS) {
+        // On the mode key
         cursorRow = 2;
         cursorCol = 9;
+    } else {
+        cursorRow = 0;
+        cursorCol = 0;
     }
+}
+
+void VirtualKeyboard::commitHangul()
+{
+#if HAS_HANGUL_INPUT
+    uint32_t out[HG_MAX_OUT];
+    const int n = hg_flush(&hangul, out);
+    for (int i = 0; i < n; i++)
+        inputText += WaypointUtils::utf8FromCodepoint(out[i]);
+#endif
+}
+
+std::string VirtualKeyboard::composingText() const
+{
+    std::string text;
+#if HAS_HANGUL_INPUT
+    uint32_t out[HG_MAX_OUT];
+    const int n = hg_composing(&hangul, out);
+    for (int i = 0; i < n; i++)
+        text += WaypointUtils::utf8FromCodepoint(out[i]);
+#endif
+    return text;
+}
+
+std::string VirtualKeyboard::shownText() const
+{
+    return hangulMode ? inputText + composingText() : inputText;
+}
+
+void VirtualKeyboard::stepHangulCursor(int direction)
+{
+    // The keys' first cells, the side column, the action column; past the end, the next or previous row
+    static const uint8_t cols[] = {0, 3, 6, kHangulSideCol, KEYBOARD_COLS - 1};
+    const int n = sizeof(cols) / sizeof(cols[0]);
+    int i = 0;
+    while (i < n - 1 && cols[i] < cursorCol)
+        i++;
+    i += direction;
+    if (i >= n) {
+        i = 0;
+        cursorRow = (cursorRow + 1) % KEYBOARD_ROWS;
+    } else if (i < 0) {
+        i = n - 1;
+        cursorRow = (cursorRow + KEYBOARD_ROWS - 1) % KEYBOARD_ROWS;
+    }
+    cursorCol = cols[i];
+}
+
+bool VirtualKeyboard::handleHangulPress(bool isLongPress)
+{
+#if HAS_HANGUL_INPUT
+    if (cursorCol == KEYBOARD_COLS - 1) {
+        // The action keys: BACK removes a letter of the syllable being composed, ESC drops it; ENTER and SPACE finish
+        // it, then act as in letter mode
+        switch (keyboard[cursorRow][cursorCol].type) {
+        case VK_BACKSPACE:
+            if (isLongPress) {
+                hg_init(&hangul);
+                return false;
+            }
+            return hg_backspace(&hangul);
+        case VK_ESC:
+            if (!hg_composing_any(&hangul))
+                return false;
+            hg_init(&hangul);
+            return true;
+        default:
+            commitHangul();
+            return false;
+        }
+    }
+    if (cursorCol == kHangulSideCol) {
+        if (cursorRow == 0) {
+            enterMode(nextMode(MODE_HANGUL));
+        } else {
+            commitHangul();
+            insertText(kHangulSide[cursorRow]);
+        }
+        return true;
+    }
+    // A 나랏글 key, when the text has room for it
+    if (inputText.length() + kHangulReserve > kMaxTextBytes)
+        return true;
+    uint32_t out[HG_MAX_OUT];
+    const int n = hg_press(&hangul, (hg_key)(cursorRow * 3 + cursorCol / kHangulKeyCols), out);
+    for (int i = 0; i < n; i++)
+        inputText += WaypointUtils::utf8FromCodepoint(out[i]);
     return true;
 #else
     (void)isLongPress;

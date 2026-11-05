@@ -6,7 +6,7 @@
 
 #include "graphics/fontpack/FontPacks.h"
 
-#if HAS_FONTPACKS
+#if HAS_STROKE_INPUT
 
 #include <stdint.h>
 

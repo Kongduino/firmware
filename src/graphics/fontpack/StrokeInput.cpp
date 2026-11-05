@@ -1,6 +1,6 @@
 #include "graphics/fontpack/StrokeInput.h"
 
-#if HAS_FONTPACKS
+#if HAS_STROKE_INPUT
 
 #include "DebugConfiguration.h"
 #include "concurrency/LockGuard.h"

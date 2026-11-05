@@ -1048,7 +1048,7 @@ void CannedMessageModule::freetextChanged()
 // clears them. With no strokes typed, keys other than the stroke keys type as usual (digits, punctuation, space)
 bool CannedMessageModule::handleStrokeInput(const InputEvent *event)
 {
-#if HAS_FONTPACKS
+#if HAS_STROKE_INPUT
     namespace SI = graphics::StrokeInput;
     if (event->kbchar == INPUT_BROKER_MSG_STROKE_MODE) {
         if (!strokeMode && !SI::available()) {
@@ -1134,7 +1134,7 @@ bool CannedMessageModule::handleStrokeInput(const InputEvent *event)
 
 void CannedMessageModule::pickStrokeCandidate(int i)
 {
-#if HAS_FONTPACKS
+#if HAS_STROKE_INPUT
     // Only when it fits: otherwise the strokes stay, and the user can delete text to make room
     uint32_t cp = graphics::StrokeInput::pageCandidate(i);
     if (cp && insertFreetext(String(WaypointUtils::utf8FromCodepoint(cp).c_str())))
@@ -1148,7 +1148,7 @@ void CannedMessageModule::pickStrokeCandidate(int i)
 // The strokes typed so far and the candidates, at the bottom of the compose screen
 void CannedMessageModule::drawStrokeInput(OLEDDisplay *display, int16_t x, int16_t y)
 {
-#if HAS_FONTPACKS
+#if HAS_STROKE_INPUT
     if (!strokeMode)
         return;
     namespace SI = graphics::StrokeInput;
