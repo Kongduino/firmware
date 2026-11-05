@@ -945,7 +945,7 @@ bool CannedMessageModule::handleFreeTextInput(const InputEvent *event)
 
     // All hardware keys fall through to here (CardKB, physical, etc.)
 
-    if (handleStrokeInput(event))
+    if (handleHangulInput(event) || handleStrokeInput(event))
         return true;
 
     if (event->kbchar == INPUT_BROKER_MSG_EMOTE_LIST) {
@@ -1129,6 +1129,134 @@ bool CannedMessageModule::handleStrokeInput(const InputEvent *event)
 #else
     (void)event;
     return false;
+#endif
+}
+
+// Korean input (나랏글): Alt+Space switches the compose screen between letters and 한. The keys printed with a phone
+// keypad's digits type its 나랏글 keys: W E R (1 2 3) ㄱ ㄴ ㅏㅓ, S D F (4 5 6) ㄹ ㅁ ㅗㅜ, Z X C (7 8 9) ㅅ ㅇ ㅣ, A (*)
+// 획추가, mic (0) ㅡ, Q (#) 쌍자음. The syllable being composed stands at the cursor; space, punctuation, Enter and the
+// cursor keys finish it, backspace removes its last letter and Esc drops it. The other letters type nothing
+bool CannedMessageModule::handleHangulInput(const InputEvent *event)
+{
+#if HAS_HANGUL_INPUT
+    if (event->kbchar == INPUT_BROKER_MSG_STROKE_MODE) {
+#if HAS_STROKE_INPUT
+        return false; // a build with both: Alt+Space stays the strokes' (not settled yet)
+#else
+        if (!hangulMode && !(graphics::FontPacks::hasGlyph(0xAC00) && graphics::FontPacks::hasGlyph(0x3131))) {
+            LOG_INFO("Korean input: no font pack with Hangul (가, ㄱ)");
+            if (screen)
+                screen->showSimpleBanner("No Hangul font pack", 2000);
+            return true;
+        }
+        hangulCommit();
+        hangulMode = !hangulMode;
+        freetextChanged();
+        return true;
+#endif
+    }
+    if (!hangulMode)
+        return false;
+    // The text changed elsewhere (sent, cleared): nothing is being composed any more
+    if (hangulShown.length() > 0 &&
+        (cursor < hangulShown.length() || freetext.substring(cursor - hangulShown.length(), cursor) != hangulShown))
+        hangulCommit();
+
+    if (event->inputEvent == INPUT_BROKER_ANYKEY && event->kbchar != 0) {
+        if (event->kbchar == INPUT_BROKER_MSG_MIC)
+            return hangulKey(HG_KEY_EU);
+        const char c = static_cast<char>(std::tolower(static_cast<unsigned char>(event->kbchar)));
+        static const char kKeys[] = "wersdfzxca"; // HG_KEY_G ... HG_KEY_STROKE
+        const char *at = c ? strchr(kKeys, c) : nullptr;
+        if (at)
+            return hangulKey(static_cast<hg_key>(at - kKeys));
+        if (c == 'q')
+            return hangulKey(HG_KEY_DOUBLE);
+        if (c >= 'a' && c <= 'z')
+            return true; // the other letters type nothing in Korean
+        hangulCommit();  // space, digits, punctuation: typed as usual after the syllable
+        return false;
+    }
+    if (!hg_composing_any(&hangul))
+        return false;
+    if (event->inputEvent == INPUT_BROKER_BACK) {
+        hg_backspace(&hangul);
+        hangulShow("");
+        return true;
+    }
+    if (event->inputEvent == INPUT_BROKER_CANCEL) {
+        hg_init(&hangul);
+        hangulShow("");
+        return true;
+    }
+    hangulCommit(); // Enter, the cursor keys...: as usual, after the syllable
+    return false;
+#else
+    (void)event;
+    return false;
+#endif
+}
+
+bool CannedMessageModule::hangulKey(hg_key key)
+{
+#if HAS_HANGUL_INPUT
+    // Room for what a key may finish and what stays composed (3 bytes each); otherwise the key does nothing
+    if (freetext.length() - hangulShown.length() + 3 * (HG_MAX_OUT + 2) > maxFreetextBytes())
+        return true;
+    uint32_t out[HG_MAX_OUT];
+    const int n = hg_press(&hangul, key, out);
+    String done;
+    for (int i = 0; i < n; i++)
+        done += WaypointUtils::utf8FromCodepoint(out[i]).c_str();
+    hangulShow(done);
+#else
+    (void)key;
+#endif
+    return true;
+}
+
+void CannedMessageModule::hangulShow(const String &done)
+{
+#if HAS_HANGUL_INPUT
+    uint32_t cps[HG_MAX_OUT];
+    const int n = hg_composing(&hangul, cps);
+    String composing;
+    for (int i = 0; i < n; i++)
+        composing += WaypointUtils::utf8FromCodepoint(cps[i]).c_str();
+    // In place of the syllable shown before
+    const unsigned int shown = hangulShown.length();
+    freetext.remove(cursor - shown, shown);
+    cursor -= shown;
+    hangulShown = insertFreetext(done + composing) ? composing : String();
+    freetextChanged();
+#else
+    (void)done;
+#endif
+}
+
+void CannedMessageModule::hangulCommit()
+{
+    hg_init(&hangul);
+    hangulShown = "";
+}
+
+// The input mode, at the bottom of the compose screen
+void CannedMessageModule::drawHangulInput(OLEDDisplay *display, int16_t x, int16_t y)
+{
+#if HAS_HANGUL_INPUT
+    if (!hangulMode)
+        return;
+    const int lineH = FONT_HEIGHT_SMALL;
+    const int16_t lineY = y + display->getHeight() - lineH - 1;
+    display->setColor(BLACK);
+    display->fillRect(x, lineY - 2, display->getWidth(), y + display->getHeight() - (lineY - 2));
+    display->setColor(WHITE);
+    display->drawHorizontalLine(x, lineY - 2, display->getWidth());
+    graphics::UIRenderer::drawStringWithEmotes(display, x + BASEUI_BODY_LR_MARGIN, lineY, "한", lineH, 1, false);
+#else
+    (void)display;
+    (void)x;
+    (void)y;
 #endif
 }
 
@@ -2244,6 +2372,7 @@ void CannedMessageModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *st
                                  display->getWidth() - inputX - BASEUI_BODY_LR_MARGIN, FONT_HEIGHT_SMALL);
         }
         drawStrokeInput(display, x, y);
+        drawHangulInput(display, x, y);
 #endif
         return;
     }
