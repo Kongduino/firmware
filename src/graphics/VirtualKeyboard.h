@@ -39,6 +39,10 @@ class VirtualKeyboard
     void handlePress();
     void handleLongPress();
 
+    // Touch screens: presses the key drawn at (x, y), as handlePress or handleLongPress would with the cursor on it.
+    // False when (x, y) is outside the keys (or the keyboard hasn't been drawn yet)
+    bool tapAt(int16_t x, int16_t y, bool isLongPress);
+
     // Timeout management
     void resetTimeout();
     bool isTimedOut() const;
@@ -60,12 +64,18 @@ class VirtualKeyboard
     uint8_t cursorRow;
     uint8_t cursorCol;
 
+    // Where draw() put the keys, for tapAt: each column's x and width, the top of the first row, the row height
+    int16_t drawnColX[KEYBOARD_COLS] = {};
+    int16_t drawnColW[KEYBOARD_COLS] = {};
+    int16_t drawnTop = 0;
+    int16_t drawnRowH = 0;
+
     // Timeout management for auto-exit
     uint32_t lastActivityTime;
     static const uint32_t TIMEOUT_MS = 60000; // 1 minute timeout
 
     void initializeKeyboard();
-    void drawKey(OLEDDisplay *display, const VirtualKey &key, bool selected, int16_t x, int16_t y, uint8_t w, uint8_t h,
+    void drawKey(OLEDDisplay *display, const VirtualKey &key, bool selected, int16_t x, int16_t y, int16_t w, int16_t h,
                  bool isLastCol);
     void drawInputArea(OLEDDisplay *display, int16_t offsetX, int16_t offsetY, int16_t keyboardStartY);
 
@@ -113,8 +123,8 @@ class VirtualKeyboard
     bool insertText(const std::string &text); // whole or not at all, within the length limit
     std::string keyLabel(int row, int col);   // a key's label in the current layout ("" for none)
     void drawLabeledKey(OLEDDisplay *display, const std::string &keyText, bool isAction, bool selected, int16_t x, int16_t y,
-                        uint8_t width, uint8_t height, bool isLastCol);
-    int textWidth(OLEDDisplay *display, const std::string &s); // through the font packs when there are any
+                        int16_t width, int16_t height, bool isLastCol); // wider than 255 on large screens
+    int textWidth(OLEDDisplay *display, const std::string &s);          // through the font packs when there are any
     void drawText(OLEDDisplay *display, int x, int y, const std::string &s);
 };
 

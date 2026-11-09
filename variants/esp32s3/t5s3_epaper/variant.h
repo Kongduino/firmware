@@ -5,7 +5,10 @@
 #define EPD_HEIGHT 540
 
 #define CANNED_MESSAGE_MODULE_ENABLE 1
+// TOUCH_ON_SCREEN_KEYBOARD (font packs): the on-screen keyboard, with stroke or Korean input, replaces the touch QWERTY
+#ifndef TOUCH_ON_SCREEN_KEYBOARD
 #define USE_VIRTUAL_KEYBOARD 1
+#endif
 
 #if defined(T5_S3_EPAPER_PRO_V1)
 #define BOARD_BL_EN 40
@@ -34,6 +37,10 @@
 // Do not use touch as a light-sleep wake source on T5-S3.
 // Wake should come from physical buttons/radio/timer only.
 #define SCREEN_TOUCH_INT GT911_PIN_INT
+// BaseUI draws in landscape (960 x 540) while the GT911 reports portrait coordinates: screen x = touch y, screen
+// y = 539 - touch x (the on-screen keyboard's taps; see OnScreenKeyboardModule)
+#define TOUCH_TO_SCREEN_X(tx, ty) (ty)
+#define TOUCH_TO_SCREEN_Y(tx, ty) (EPD_HEIGHT - 1 - (tx))
 
 // Touch control helpers for this variant
 bool isTouchInputEnabled();

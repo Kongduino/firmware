@@ -45,6 +45,10 @@ const char *const kHangulKeysShort[3] = {"획", "ㅡ", "쌍"}; // the bottom row
 const char *const kHangulSide[4] = {"", ".", ",", "?"};     // under the mode key
 // Room kept in the text for what a key may finish and what stays composed
 constexpr size_t kHangulReserve = 3 * (HG_MAX_OUT + 2);
+// Screens this wide or wider (the T5 E-Paper's 960 px) keep the right column's labels this far from the edge: the
+// panel's frame hides the last pixels
+constexpr int kLargeScreenWidth = 480;
+constexpr int kLargeScreenRightPad = 14;
 } // namespace
 
 VirtualKeyboard::VirtualKeyboard() : cursorRow(0), cursorCol(0), lastActivityTime(millis())
@@ -129,7 +133,8 @@ void VirtualKeyboard::draw(OLEDDisplay *display, int16_t offsetX, int16_t offset
     const int wENTER = display->getStringWidth("ENTER");
     int lastColLabelW = wENTER; // ENTER is usually the widest
     // Smaller padding on very small screens to avoid excessive whitespace
-    const int lastColPad = (screenW <= 128 ? 2 : 6);
+    // Large screens: room on the right too, where a panel's frame may hide the last pixels (see kLargeScreenRightPad)
+    const int lastColPad = (screenW <= 128 ? 2 : 6) + (screenW >= kLargeScreenWidth ? kLargeScreenRightPad : 0);
     const int reservedLastColW = lastColLabelW + lastColPad; // reserved width for last column keys
 
     // Always reserve width for the rightmost text column to avoid overlap on small screens
@@ -164,6 +169,10 @@ void VirtualKeyboard::draw(OLEDDisplay *display, int16_t offsetX, int16_t offset
     } else if (isWide) {
         // For wide screens (e.g., T114 240x135), prefer square keys: height equals left-column key width.
         cellH = std::max((int)KEY_HEIGHT, cellW);
+#if HAS_TOUCHSCREEN
+        // Typed with a finger: taller keys (the width is what eleven columns leave)
+        cellH = cellW * 3 / 2;
+#endif
 
         // Guarantee at least 2 lines of input are visible by reducing cell height minimally if needed.
         // Replicate the spacing used in drawInputArea(): headerGap=1, box-to-header gap=1, gap above keyboard=1
@@ -210,6 +219,12 @@ void VirtualKeyboard::draw(OLEDDisplay *display, int16_t offsetX, int16_t offset
     // Last column
     colX[KEYBOARD_COLS - 1] = runningX;
     colW[KEYBOARD_COLS - 1] = reservedLastColW;
+    for (int col = 0; col < KEYBOARD_COLS; ++col) {
+        drawnColX[col] = colX[col];
+        drawnColW[col] = colW[col];
+    }
+    drawnTop = offsetY + keyboardStartY;
+    drawnRowH = cellH;
 
     // Draw keyboard grid
     for (int row = 0; row < KEYBOARD_ROWS; row++) {
@@ -230,13 +245,13 @@ void VirtualKeyboard::draw(OLEDDisplay *display, int16_t offsetX, int16_t offset
                 std::string label = keyLabel(row, col);
                 if (row == 3 && col < kHangulSideCol && textWidth(display, label) > w - 2)
                     label = kHangulKeysShort[col / kHangulKeyCols];
-                drawLabeledKey(display, label, false, selected, x, y, (uint8_t)w, (uint8_t)h, false);
+                drawLabeledKey(display, label, false, selected, x, y, w, h, false);
             } else if (strokeMode && !isLastCol) {
                 std::string label = keyLabel(row, col);
                 if (!label.empty())
-                    drawLabeledKey(display, label, false, selected, x, y, (uint8_t)w, (uint8_t)h, false);
+                    drawLabeledKey(display, label, false, selected, x, y, w, h, false);
             } else if (k.character != 0 || k.type != VK_CHAR) {
-                drawKey(display, k, selected, x, y, (uint8_t)w, (uint8_t)h, isLastCol);
+                drawKey(display, k, selected, x, y, w, h, isLastCol);
             }
         }
     }
@@ -481,8 +496,8 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
     }
 }
 
-void VirtualKeyboard::drawKey(OLEDDisplay *display, const VirtualKey &key, bool selected, int16_t x, int16_t y, uint8_t width,
-                              uint8_t height, bool isLastCol)
+void VirtualKeyboard::drawKey(OLEDDisplay *display, const VirtualKey &key, bool selected, int16_t x, int16_t y, int16_t width,
+                              int16_t height, bool isLastCol)
 {
     // The key's label, drawn by drawLabeledKey
     display->setFont(FONT_SMALL);
@@ -514,7 +529,7 @@ void VirtualKeyboard::drawKey(OLEDDisplay *display, const VirtualKey &key, bool 
 }
 
 void VirtualKeyboard::drawLabeledKey(OLEDDisplay *display, const std::string &keyText, bool isAction, bool selected, int16_t x,
-                                     int16_t y, uint8_t width, uint8_t height, bool isLastCol)
+                                     int16_t y, int16_t width, int16_t height, bool isLastCol)
 {
     display->setFont(FONT_SMALL);
     const int fontH = FONT_HEIGHT_SMALL;
@@ -524,7 +539,7 @@ void VirtualKeyboard::drawLabeledKey(OLEDDisplay *display, const std::string &ke
     // - Other keys: center horizontally; use ceil-style rounding to avoid appearing left-biased on odd widths.
     int textX;
     if (isLastCol) {
-        const int rightPad = 1;
+        const int rightPad = display->getWidth() >= kLargeScreenWidth ? kLargeScreenRightPad : 1;
         textX = x + width - textWidth - rightPad;
         if (textX < x)
             textX = x; // guard
@@ -790,6 +805,39 @@ void VirtualKeyboard::handleLongPress()
     default:
         break;
     }
+}
+
+bool VirtualKeyboard::tapAt(int16_t x, int16_t y, bool isLongPress)
+{
+    if (drawnRowH <= 0 || y < drawnTop || y >= drawnTop + KEYBOARD_ROWS * drawnRowH)
+        return false;
+    int col = -1;
+    for (int c = 0; c < KEYBOARD_COLS; c++) {
+        if (x >= drawnColX[c] && x < drawnColX[c] + drawnColW[c]) {
+            col = c;
+            break;
+        }
+    }
+    if (col < 0)
+        return false;
+    const int row = (y - drawnTop) / drawnRowH;
+
+    // A Korean key is three cells wide: any of them is the key. A cell with nothing drawn in it (no candidate there,
+    // an empty letter slot) takes no press, but the tap is used
+    if (hangulMode && col < kHangulSideCol)
+        col -= col % kHangulKeyCols;
+    if (strokeMode && col < KEYBOARD_COLS - 1 && keyLabel(row, col).empty())
+        return true;
+    if (!hangulMode && !strokeMode && keyboard[row][col].character == 0 && keyboard[row][col].type == VK_CHAR)
+        return true;
+
+    cursorRow = (uint8_t)row;
+    cursorCol = (uint8_t)col;
+    if (isLongPress)
+        handleLongPress();
+    else
+        handlePress();
+    return true;
 }
 
 void VirtualKeyboard::insertCharacter(char c)
