@@ -1095,6 +1095,11 @@ void setup()
     osk_found = true;
 #endif
 #endif
+#if defined(TOUCH_ON_SCREEN_KEYBOARD) && HAS_TOUCHSCREEN
+    // A touch screen typing on the on-screen keyboard (font packs: strokes, Korean) rather than the canned message
+    // module's touch QWERTY
+    osk_found = true;
+#endif
 #if ARCH_PORTDUINO && defined(__linux__)
     // Same idea for a gamepad: it can drive the on-screen keyboard but cannot type, so without a
     // configured keyboard device it is the only way to compose freetext on this host.

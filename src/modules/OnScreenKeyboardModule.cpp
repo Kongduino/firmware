@@ -73,6 +73,24 @@ bool OnScreenKeyboardModule::processVirtualKeyboardInput(const InputEvent &event
     if (!targetKeyboard)
         return false;
 
+#if HAS_TOUCHSCREEN
+    // A tap or a long press on the screen presses the key under the finger (swipes still move the cursor). Taps outside
+    // the keys (the text) do nothing
+    if ((event.touchX != 0 || event.touchY != 0) &&
+        (event.inputEvent == INPUT_BROKER_USER_PRESS || event.inputEvent == INPUT_BROKER_SELECT)) {
+#ifdef TOUCH_TO_SCREEN_X
+        // A touch panel mounted in another orientation than the screen is drawn in (the variant says how)
+        const int16_t x = TOUCH_TO_SCREEN_X(event.touchX, event.touchY);
+        const int16_t y = TOUCH_TO_SCREEN_Y(event.touchX, event.touchY);
+#else
+        const int16_t x = event.touchX;
+        const int16_t y = event.touchY;
+#endif
+        targetKeyboard->tapAt(x, y, event.inputEvent == INPUT_BROKER_SELECT);
+        return true;
+    }
+#endif
+
     switch (event.inputEvent) {
     case INPUT_BROKER_UP:
     case INPUT_BROKER_UP_LONG:
