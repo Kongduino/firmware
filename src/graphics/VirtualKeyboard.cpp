@@ -235,7 +235,7 @@ void VirtualKeyboard::draw(OLEDDisplay *display, int16_t offsetX, int16_t offset
             int w = colW[col];
             int y = offsetY + keyboardStartY + row * cellH;
             int h = cellH;
-            bool selected = (row == cursorRow && col == cursorCol);
+            bool selected = cursorShown && row == cursorRow && col == cursorCol;
             if (hangulMode && !isLastCol) {
                 // Three cells per key, then the side column
                 if (col % kHangulKeyCols != 0 && col != kHangulSideCol)
@@ -631,6 +631,7 @@ char VirtualKeyboard::getCharForKey(const VirtualKey &key, bool isLongPress)
 void VirtualKeyboard::moveCursorDelta(int dRow, int dCol)
 {
     resetTimeout();
+    cursorShown = true;
     // wrap around rows and cols in the 4x11 grid
     int r = (int)cursorRow + dRow;
     int c = (int)cursorCol + dCol;
@@ -657,6 +658,7 @@ void VirtualKeyboard::moveCursorDown()
 void VirtualKeyboard::moveCursorLeft()
 {
     resetTimeout();
+    cursorShown = true;
     if (hangulMode) {
         stepHangulCursor(-1);
         return;
@@ -680,6 +682,7 @@ void VirtualKeyboard::moveCursorLeft()
 void VirtualKeyboard::moveCursorRight()
 {
     resetTimeout();
+    cursorShown = true;
     if (hangulMode) {
         stepHangulCursor(1);
         return;
@@ -833,6 +836,7 @@ bool VirtualKeyboard::tapAt(int16_t x, int16_t y, bool isLongPress)
 
     cursorRow = (uint8_t)row;
     cursorCol = (uint8_t)col;
+    cursorShown = false;
     if (isLongPress)
         handleLongPress();
     else
