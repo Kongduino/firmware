@@ -63,6 +63,13 @@ class VirtualKeyboard
 
     uint8_t cursorRow;
     uint8_t cursorCol;
+    // The highlighted key. Hidden after a tap (the finger shows the key), so a tap redraws only the text: on e-paper a
+    // small refresh, not the screen. Swipes and buttons move the cursor and show it again
+#ifdef TOUCH_ON_SCREEN_KEYBOARD
+    bool cursorShown = false;
+#else
+    bool cursorShown = true;
+#endif
 
     // Where draw() put the keys, for tapAt: each column's x and width, the top of the first row, the row height
     int16_t drawnColX[KEYBOARD_COLS] = {};
