@@ -188,6 +188,9 @@ extern struct portduino_config_struct {
     bool tcxo_optional = false;
     int lora_usb_pid = 0x5512;
     int lora_usb_vid = 0x1A86;
+    // Serial port and baud of an STM32WLE5 running e5-bridge, used when spidev is "e5bridge"
+    std::string lora_e5_serial = "";
+    int lora_e5_baud = 2000000;
     int spiSpeed = 2000000;
     int num_pa_points = 1; // default to 1 point, with 0 gain
     uint16_t tx_gain_lora[22] = {0};
@@ -419,6 +422,10 @@ extern struct portduino_config_struct {
         }
         if (lora_usb_serial_num != "")
             out << YAML::Key << "USB_Serialnum" << YAML::Value << lora_usb_serial_num;
+        if (lora_e5_serial != "")
+            out << YAML::Key << "E5_Serial" << YAML::Value << lora_e5_serial;
+        if (lora_e5_baud != 2000000)
+            out << YAML::Key << "E5_Baud" << YAML::Value << lora_e5_baud;
         if (spiSpeed != 2000000)
             out << YAML::Key << "spiSpeed" << YAML::Value << spiSpeed;
         if (irq_dio_num >= 0)

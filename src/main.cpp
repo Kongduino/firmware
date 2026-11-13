@@ -977,7 +977,7 @@ void setup()
     SPI.begin(false);
 #endif // HW_SPI1_DEVICE
 #elif ARCH_PORTDUINO
-    if (portduino_config.lora_spi_dev != "ch341") {
+    if (portduino_config.lora_spi_dev != "ch341" && portduino_config.lora_spi_dev != "e5bridge") {
         SPI.begin();
     }
 #elif !defined(ARCH_ESP32) // ARCH_RP2040

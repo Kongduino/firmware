@@ -29,6 +29,11 @@
 #include "platform/portduino/PortduinoGlue.h"
 #include "platform/portduino/SimRadio.h"
 #include "platform/portduino/USBHal.h"
+#ifndef ARCH_PORTDUINO_WASM
+#include "E5BridgeHal.h"
+#include <thread>
+#include <unistd.h>
+#endif
 #endif
 
 #if defined(ARCH_ESP32) && defined(USE_MCP23017)
@@ -378,6 +383,37 @@ extern SPIClass SPI1;
 #endif
 #endif
 
+#if defined(ARCH_PORTDUINO) && !defined(ARCH_PORTDUINO_WASM)
+// Created once and never freed: initLoRa() runs again after a LoRa error, and the reader thread runs until exit
+static E5BridgeHal *e5Hal = nullptr;
+
+static bool startE5Bridge(const SPISettings &spiSettings)
+{
+    if (e5Hal)
+        return true;
+    auto *serial = new arduino::LinuxSerial();
+    serial->setPath(portduino_config.lora_e5_serial);
+    serial->begin(portduino_config.lora_e5_baud);
+    if (portduino_config.lora_e5_serial.empty() || !*serial) {
+        LOG_ERROR("E5 bridge: cannot open Lora.E5_Serial '%s'", portduino_config.lora_e5_serial.c_str());
+        return false;
+    }
+    // The host HAL only lends timing and a wired IRQ GPIO; E5BridgeHal never calls its init(), so SPI stays untouched
+    auto *hostHal = new LockingArduinoHal(SPI, spiSettings);
+    const bool irqOverLink = !portduino_config.lora_irq_pin.enabled;
+    e5Hal = new E5BridgeHal(hostHal, new E5StreamLink(*serial), irqOverLink);
+    if (irqOverLink) {
+        std::thread([] {
+            for (;;) {
+                e5Hal->pollLink();
+                usleep(500);
+            }
+        }).detach();
+    }
+    return true;
+}
+#endif
+
 std::unique_ptr<RadioInterface> initLoRa()
 {
     std::unique_ptr<RadioInterface> rIf = nullptr;
@@ -421,9 +457,25 @@ std::unique_ptr<RadioInterface> initLoRa()
 
     LOG_DEBUG("Activate %s radio on SPI port %s", portduino_config.loraModules[portduino_config.lora_module].c_str(),
               portduino_config.lora_spi_dev.c_str());
+    RADIOLIB_PIN_TYPE csPin = portduino_config.lora_cs_pin.pin;
+    RADIOLIB_PIN_TYPE irqPin = portduino_config.lora_irq_pin.pin;
+    RADIOLIB_PIN_TYPE resetPin = portduino_config.lora_reset_pin.pin;
+    RADIOLIB_PIN_TYPE busyPin = portduino_config.lora_busy_pin.pin;
     if (portduino_config.lora_spi_dev == "ch341") {
         RadioLibHAL = ch341Hal.get(); // non-owning: the ch341 HAL stays owned by the global unique_ptr
         ch341Hal->setRadioPins(portduino_config.lora_cs_pin.pin, portduino_config.lora_busy_pin.pin);
+#ifndef ARCH_PORTDUINO_WASM
+    } else if (portduino_config.lora_spi_dev == "e5bridge") {
+        if (!startE5Bridge(loraSpiSettings))
+            exit(EXIT_FAILURE);
+        RadioLibHAL = e5Hal; // non-owning, like the ch341 HAL
+        // The E5 drives NSS, BUSY and reset itself; the IRQ is a GPIO only if Lora.IRQ is set
+        csPin = E5BridgeHal::PIN_NSS;
+        busyPin = E5BridgeHal::PIN_BUSY;
+        resetPin = E5BridgeHal::PIN_RESET;
+        if (!portduino_config.lora_irq_pin.enabled)
+            irqPin = E5BridgeHal::PIN_IRQ;
+#endif
     } else {
         if (RadioLibHAL != nullptr) {
             delete RadioLibHAL;
@@ -431,9 +483,7 @@ std::unique_ptr<RadioInterface> initLoRa()
         }
         RadioLibHAL = new LockingArduinoHal(SPI, loraSpiSettings);
     }
-    rIf =
-        loraModuleInterface((LockingArduinoHal *)RadioLibHAL, portduino_config.lora_cs_pin.pin, portduino_config.lora_irq_pin.pin,
-                            portduino_config.lora_reset_pin.pin, portduino_config.lora_busy_pin.pin);
+    rIf = loraModuleInterface((LockingArduinoHal *)RadioLibHAL, csPin, irqPin, resetPin, busyPin);
 
     if (!rIf->init()) {
         LOG_WARN("No %s radio", portduino_config.loraModules[portduino_config.lora_module].c_str());

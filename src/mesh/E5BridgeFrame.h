@@ -6,7 +6,8 @@
 #include <string.h>
 
 #define E5_PROTO_VERSION 1
-#define E5_MAX_PAYLOAD 300
+#define E5_MAX_SPI 300                                      // longest SPI_XFER; RadioLib's SX126x buffer access needs 258
+#define E5_MAX_PAYLOAD (1 + E5_MAX_SPI)                     // an SPI_XFER response: status, then the bytes returned
 #define E5_MAX_FRAME (2 + E5_MAX_PAYLOAD + 2)               // type, seq, payload, crc
 #define E5_MAX_WIRE (E5_MAX_FRAME + E5_MAX_FRAME / 254 + 2) // COBS overhead, delimiter
 
@@ -14,11 +15,15 @@
 #define E5_BOOT_MAGIC "BOOT"
 #define E5_BOOT_MAGIC_LEN 4
 
+// HELLO request flags
+#define E5_HELLO_IRQ_EVENTS 0x01 // send E5_MSG_EVT_IRQ on each radio interrupt, for hosts with no IRQ wire
+
 enum {
     E5_MSG_HELLO = 0x01,
     E5_MSG_SPI_XFER = 0x02,
     E5_MSG_GPIO_WRITE = 0x03,
     E5_MSG_BOOT = 0x04,
+    E5_MSG_EVT_IRQ = 0x40,  // unsolicited, seq 0, no payload: the radio raised its interrupt
     E5_MSG_RESPONSE = 0x80, // response type = request type | 0x80
     E5_MSG_ERROR = 0xFF,
 };

@@ -67,6 +67,8 @@ const std::map<std::string, std::set<std::string>> &schema()
           "USB_PID",
           "USB_VID",
           "USB_Serialnum",
+          "E5_Serial",
+          "E5_Baud",
           "CS",
           "IRQ",
           "Busy",
@@ -599,6 +601,8 @@ const std::map<std::string, ValueSpec> &valueSpecs()
         {"Lora.USB_PID", {kInt, false}},
         {"Lora.USB_VID", {kInt, false}},
         {"Lora.USB_Serialnum", {kString, false}},
+        {"Lora.E5_Serial", {kString, false}},
+        {"Lora.E5_Baud", {kInt, false}},
         {"General.MaxNodes", {kInt, false}},
         {"General.MaxMessageQueue", {kInt, false}},
         {"General.APIPort", {kInt, false}},
@@ -1140,7 +1144,8 @@ void checkCrossFileOverlap(const PathIndex &paths, const std::map<std::string, s
              std::to_string(loraOwners->second.size()) + " files define a 'Lora:' section (" + files +
                  "). These keys are re-read with a default every time a Lora section is seen, so any of them not repeated "
                  "in the last file loaded is reset: spidev, spiSpeed, gpiochip, DIO2_AS_RF_SWITCH, DIO3_TCXO_VOLTAGE, "
-                 "USB_PID, USB_VID, USB_Serialnum. Normally exactly one Lora config should be enabled at a time"});
+                 "USB_PID, USB_VID, USB_Serialnum, E5_Serial, E5_Baud. Normally exactly one Lora config should be enabled "
+                 "at a time"});
     }
 }
 
@@ -1199,6 +1204,25 @@ void checkMergedConfig(const PathIndex &paths, std::vector<Finding> &findings)
                                 "Lora.spidev is ch341, so the Lora pins are indexes on the USB adapter and are driven by "
                                 "the usermode driver rather than claimed from a gpiochip. " +
                                     ignored + " are read but never used"});
+    }
+
+    if (portduino_config.lora_spi_dev == "e5bridge") {
+        if (portduino_config.lora_e5_serial.empty())
+            findings.push_back(
+                {kError, merged, 0, "Lora.spidev is e5bridge but Lora.E5_Serial, the E5's serial port, is not set"});
+        if (portduino_config.lora_module != use_sx1262)
+            findings.push_back({kError, merged, 0,
+                                "Lora.spidev is e5bridge, which drives the E5's radio as an SX1262, but Module is " +
+                                    moduleName() + ". Set Module: sx1262"});
+        // The E5 drives the radio's NSS, BUSY and reset itself, so lines mapped for them are claimed and never used
+        std::string ignored;
+        for (const auto *pin : {&portduino_config.lora_cs_pin, &portduino_config.lora_busy_pin, &portduino_config.lora_reset_pin})
+            if (pin->enabled)
+                ignored += (ignored.empty() ? "Lora." : ", Lora.") + pin->config_name;
+        if (!ignored.empty())
+            findings.push_back({kWarn, merged, 0,
+                                "Lora.spidev is e5bridge, so the E5 drives the radio's NSS, BUSY and reset itself. " + ignored +
+                                    " are claimed from a gpiochip but never used"});
     }
 
     // "auto" is excluded by moduleUsesRfSwitchTable(): the module has not been probed yet, so
@@ -1335,7 +1359,7 @@ void checkMergedConfig(const PathIndex &paths, std::vector<Finding> &findings)
 #endif
 
     if (portduino_config.lora_cs_pin.enabled && !portduino_config.lora_spi_dev.empty() &&
-        portduino_config.lora_spi_dev != "ch341")
+        portduino_config.lora_spi_dev != "ch341" && portduino_config.lora_spi_dev != "e5bridge")
         findings.push_back({kInfo, merged, 0,
                             "both Lora.spidev (" + portduino_config.lora_spi_dev +
                                 ") and Lora.CS are set. If your device tree already assigns a chip select to that spidev "

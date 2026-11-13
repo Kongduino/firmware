@@ -1044,7 +1044,7 @@ void RadioLibInterface::noteCadHandoffToRx()
 bool RadioLibInterface::irqPolledOverUsb() const
 {
 #ifdef ARCH_PORTDUINO
-    return portduino_config.lora_spi_dev == "ch341";
+    return portduino_config.lora_spi_dev == "ch341" || portduino_config.lora_spi_dev == "e5bridge";
 #else
     return false;
 #endif

@@ -255,8 +255,8 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     /** Record that CAD left the chip in RX: arms both the flag and the no-show window below. */
     void noteCadHandoffToRx();
 
-    /** True where DIO1 is only seen through libch341's pin poll (a CH341 USB host), so an interrupt arrives up to
-     *  one poll interval after the chip raised it, and every command is a USB round trip. */
+    /** True where every command is a USB or UART round trip and DIO1 can arrive a poll interval late: a CH341 USB
+     *  host, whose pins libch341 polls, or an E5 bridge, whose IRQ may come over its link. */
     bool irqPolledOverUsb() const;
 
     /** Re-arm if a CAD->RX handoff has produced no packet well past one max-length airtime. */

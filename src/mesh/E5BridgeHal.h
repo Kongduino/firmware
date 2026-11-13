@@ -4,8 +4,9 @@
 #include "concurrency/Lock.h"
 #include <Arduino.h>
 #include <RadioLib.h>
+#include <atomic>
 
-/** Byte pipe to the E5: an Arduino Stream on MCU hosts, a POSIX fd on Portduino */
+/** Byte pipe to the E5 */
 class E5Link
 {
   public:
@@ -20,14 +21,15 @@ class E5StreamLink : public E5Link
   public:
     explicit E5StreamLink(Stream &port) : port(port) {}
     void write(const uint8_t *buf, size_t len) override { port.write(buf, len); }
-    int read() override { return port.read(); }
+    // Checked first because some Streams (Portduino's LinuxSerial) return 0 from an empty read()
+    int read() override { return port.available() > 0 ? port.read() : -1; }
 
   private:
     Stream &port;
 };
 
 /** RadioLibHal for the SX126x-class radio inside an STM32WLE5 running the e5-bridge firmware, reached over a UART.
- *  SPI and the radio's NSS/BUSY/RESET go over the link; timing and the E5's IRQ line stay on the host HAL. */
+ *  SPI and the radio's NSS/BUSY/RESET go over the link; timing and any wired IRQ line stay on the host HAL. */
 class E5BridgeHal : public RadioLibHal
 {
   public:
@@ -35,14 +37,19 @@ class E5BridgeHal : public RadioLibHal
     static constexpr uint32_t PIN_NSS = 0x80000000;
     static constexpr uint32_t PIN_BUSY = 0x80000001;
     static constexpr uint32_t PIN_RESET = 0x80000002;
+    // The radio IRQ carried as event frames, for hosts with no GPIO wired to the E5; needs irqOverLink
+    static constexpr uint32_t PIN_IRQ = 0x80000003;
 
-    E5BridgeHal(RadioLibHal *host, E5Link *link);
+    E5BridgeHal(RadioLibHal *host, E5Link *link, bool irqOverLink = false);
 
     /** True once the E5 has answered HELLO with our protocol version */
     bool isConnected() const { return connected; }
 
     /** Restart the E5 into its ROM bootloader, which then speaks AN3155 on the same UART: 8E1, autobaud on 0x7F */
     bool enterBootloader();
+
+    /** With irqOverLink, call often from a thread of its own: reads pending IRQ events and runs the attached ISR */
+    void pollLink();
 
     void init() override;
     void term() override {}
@@ -54,12 +61,9 @@ class E5BridgeHal : public RadioLibHal
     }
     void digitalWrite(uint32_t pin, uint32_t value) override;
     uint32_t digitalRead(uint32_t pin) override;
-    void attachInterrupt(uint32_t interruptNum, void (*interruptCb)(void), uint32_t mode) override
-    {
-        host->attachInterrupt(interruptNum, interruptCb, mode);
-    }
-    void detachInterrupt(uint32_t interruptNum) override { host->detachInterrupt(interruptNum); }
-    uint32_t pinToInterrupt(uint32_t pin) override { return host->pinToInterrupt(pin); }
+    void attachInterrupt(uint32_t interruptNum, void (*interruptCb)(void), uint32_t mode) override;
+    void detachInterrupt(uint32_t interruptNum) override;
+    uint32_t pinToInterrupt(uint32_t pin) override { return isVirtualPin(pin) ? pin : host->pinToInterrupt(pin); }
 
     void delay(RadioLibTime_t ms) override { host->delay(ms); }
     void delayMicroseconds(RadioLibTime_t us) override { host->delayMicroseconds(us); }
@@ -76,21 +80,31 @@ class E5BridgeHal : public RadioLibHal
     void spiEnd() override {}
 
   private:
-    static bool isVirtualPin(uint32_t pin) { return pin >= PIN_NSS && pin <= PIN_RESET; }
+    static bool isVirtualPin(uint32_t pin) { return pin >= PIN_NSS && pin <= PIN_IRQ; }
 
     /** One request/response exchange, with retries; the caller holds lock */
     bool transact(uint8_t type, const uint8_t *req, size_t reqLen, uint8_t *resp, size_t respMax, size_t *respLen);
 
+    /** Decode waiting bytes until a response frame is in rxFrame (true) or none is left; handles IRQ events on the way */
+    bool readFrame(size_t *frameLen);
+
     RadioLibHal *host;
     E5Link *link;
+    const bool irqOverLink;
     concurrency::Lock lock;
     bool connected = false;
     uint8_t seq = 0;
+
+    // DIO1's level as it would read on a real SX1262: set by an IRQ event, cleared by ClearIrqStatus
+    std::atomic<bool> irqLevel{false};
+    std::atomic<bool> irqEventPending{false};
+    std::atomic<void (*)(void)> irqCallback{nullptr};
 
     // Kept off the stack, which is small on nRF52 threads
     uint8_t txFrame[E5_MAX_FRAME];
     uint8_t txWire[E5_MAX_WIRE];
     uint8_t rxWire[E5_MAX_WIRE];
+    size_t rxLen = 0;
     uint8_t rxFrame[E5_MAX_WIRE];
-    uint8_t respBuf[1 + E5_MAX_PAYLOAD];
+    uint8_t respBuf[E5_MAX_PAYLOAD];
 };

@@ -962,7 +962,8 @@ void portduinoSetup()
     }
 
     // Only initialize the radio pins when dealing with real, kernel controlled SPI hardware
-    if (portduino_config.lora_spi_dev != "" && portduino_config.lora_spi_dev != "ch341") {
+    if (portduino_config.lora_spi_dev != "" && portduino_config.lora_spi_dev != "ch341" &&
+        portduino_config.lora_spi_dev != "e5bridge") {
         SPI.begin(portduino_config.lora_spi_dev.c_str());
     }
 
@@ -1170,8 +1171,11 @@ bool loadConfig(const char *configPath)
             portduino_config.lora_usb_pid = yamlConfig["Lora"]["USB_PID"].as<int>(0x5512);
             portduino_config.lora_usb_vid = yamlConfig["Lora"]["USB_VID"].as<int>(0x1A86);
 
+            portduino_config.lora_e5_serial = yamlConfig["Lora"]["E5_Serial"].as<std::string>("");
+            portduino_config.lora_e5_baud = yamlConfig["Lora"]["E5_Baud"].as<int>(2000000);
+
             portduino_config.lora_spi_dev = yamlConfig["Lora"]["spidev"].as<std::string>("spidev0.0");
-            if (portduino_config.lora_spi_dev != "ch341") {
+            if (portduino_config.lora_spi_dev != "ch341" && portduino_config.lora_spi_dev != "e5bridge") {
                 portduino_config.lora_spi_dev = "/dev/" + portduino_config.lora_spi_dev;
                 if (portduino_config.lora_spi_dev.length() == 14) {
                     int x = portduino_config.lora_spi_dev.at(11) - '0';
