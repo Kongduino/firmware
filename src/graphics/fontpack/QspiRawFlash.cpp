@@ -49,8 +49,13 @@ class QspiRawFlash : public RawFlash
     bool present() override
     {
         if (!probed) {
-            probed = true;
             isPresent = wake();
+            // With its rail off the chip can't answer: that's no answer yet, ask again when the rail is on
+            probed = isPresent || !railOff();
+            if (!probed && !railOffLogged) {
+                LOG_WARN("FontPacks: the flash's power rail is off, flash not checked yet");
+                railOffLogged = true;
+            }
         }
         return isPresent;
     }
@@ -120,6 +125,7 @@ class QspiRawFlash : public RawFlash
     bool active = false;
     bool checked = false;
     bool probed = false, isPresent = false;
+    bool railOffLogged = false;
     bool absent = false;   // no chip answered: never start the QSPI again
     uint8_t jedec[3] = {}; // the ID read at the first start, checked at every wake
 
@@ -192,16 +198,34 @@ class QspiRawFlash : public RawFlash
         active = false;
     }
 
+    static bool railOff()
+    {
+#ifdef FONTPACK_FLASH_POWER_PIN
+        return digitalRead(FONTPACK_FLASH_POWER_PIN) == LOW;
+#else
+        return false;
+#endif
+    }
+
     /// Starts the QSPI and wakes the chip from deep power-down, if needed
     bool wake()
     {
-#ifdef FONTPACK_FLASH_POWER_PIN
+#ifdef FONTPACK_FLASH_POWER_ON
+        // A rail meant to stay on (a WisBlock base's 3V3_S) found off: something else switched it, switch it back on
+        if (railOff()) {
+            const uint32_t pin = g_ADigitalPinMap[FONTPACK_FLASH_POWER_PIN];
+            LOG_WARN("FontPacks: the flash's power rail was off (pin %s), switching it on",
+                     nrf_gpio_pin_dir_get(pin) == NRF_GPIO_PIN_DIR_OUTPUT ? "output low" : "an input");
+            pinMode(FONTPACK_FLASH_POWER_PIN, OUTPUT);
+            digitalWrite(FONTPACK_FLASH_POWER_PIN, HIGH);
+            delay(10); // the chip powers up
+        }
+#endif
         // The rail is off (the GPS sleeps): driving the pins would feed the unpowered chip through them
-        if (digitalRead(FONTPACK_FLASH_POWER_PIN) == LOW) {
+        if (railOff()) {
             release();
             return false;
         }
-#endif
         if (active)
             return true;
         if (absent)
