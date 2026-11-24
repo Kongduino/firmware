@@ -46,7 +46,7 @@ static constexpr unsigned char TDeckProTapMap[_TCA8418_NUM_KEYS][4] = {
     {0x00, 0x00, 0x00}, // Ent, $, m, n, b, v, c, x, z, alt
     {0x00, 0x00, 0x00},
     {0x00, 0x00, 0x00},
-    {0x20, 0x00, 0x00, 0x00, Key::STROKE_MODE}, // Alt+Space: stroke input on or off
+    {0x20, 0x00, 0x00, Key::STROKE_MODE},       // Alt+Space: switch the input mode
     {Key::MIC, 0x00, '0'},                      // mic: Korean input's ㅡ (0 on a phone's keypad)
     {0x00, 0x00, 0x00}                          // R_Shift, sym, space, mic, L_Shift
 };
@@ -112,8 +112,9 @@ void TDeckProKeyboard::pressed(uint8_t key)
     const uint8_t modifiers = heldModifiers | latchedModifiers;
     const uint8_t column = (modifiers & 8) ? 3 : (modifiers & 4) ? 2 : (modifiers & 3) ? 1 : 0;
     uint8_t character = TDeckProTapMap[key - 1][column];
-    // Enter, space and backspace remain usable while a modifier is held.
-    if (key == 11 || key == 21 || key == 33)
+    // Enter, space and backspace remain usable while a modifier is held, unless the modifier gives them a key of
+    // their own (Alt+Space).
+    if ((key == 11 || key == 21 || key == 33) && character == 0x00)
         character = TDeckProTapMap[key - 1][0];
     usedModifiers |= heldModifiers;
     latchedModifiers = 0;
