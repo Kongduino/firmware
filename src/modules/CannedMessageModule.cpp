@@ -982,7 +982,7 @@ bool CannedMessageModule::handleFreeTextInput(const InputEvent *event)
 
     // All hardware keys fall through to here (CardKB, physical, etc.)
 
-    if (handleHangulInput(event) || handleStrokeInput(event))
+    if (handleInputModeKey(event) || handleHangulInput(event) || handleStrokeInput(event))
         return true;
 
     if (event->kbchar == INPUT_BROKER_MSG_EMOTE_LIST) {
@@ -1079,26 +1079,55 @@ void CannedMessageModule::freetextChanged()
     notifyObservers(&e);
 }
 
-// Stroke input (五笔画): Alt+Space switches the compose screen between letters and strokes. In stroke mode W E R S D
-// (printed 1 to 5) type 横 竖 撇 点 折 and A (printed *) any stroke; the candidates show at the bottom of the screen.
-// Space or Enter takes the first, Sym + 1 to 9 the others, Alt + left/right pages, backspace removes a stroke, Esc
-// clears them. With no strokes typed, keys other than the stroke keys type as usual (digits, punctuation, space)
+// Alt+Space: the compose screen goes from letters to strokes, then to 한, then back to letters, each mode only when what
+// it needs is installed (a stroke dictionary; a font pack with Hangul)
+bool CannedMessageModule::handleInputModeKey(const InputEvent *event)
+{
+#if HAS_STROKE_INPUT || HAS_HANGUL_INPUT
+    if (event->kbchar != INPUT_BROKER_MSG_STROKE_MODE)
+        return false;
+    bool strokesOk = false;
+    bool hangulOk = false;
+#if HAS_STROKE_INPUT
+    strokesOk = graphics::StrokeInput::available();
+    graphics::StrokeInput::reset();
+#endif
+#if HAS_HANGUL_INPUT
+    hangulOk = graphics::FontPacks::hasGlyph(0xAC00) && graphics::FontPacks::hasGlyph(0x3131); // 가, ㄱ
+    hangulCommit();
+#endif
+    const bool fromLetters = !strokeMode && !hangulMode;
+    const bool fromStrokes = strokeMode;
+    strokeMode = fromLetters && strokesOk;
+    hangulMode = !strokeMode && (fromLetters || fromStrokes) && hangulOk;
+    if (fromLetters && !strokeMode && !hangulMode) {
+#if HAS_STROKE_INPUT && HAS_HANGUL_INPUT
+        const char *missing = "No stroke dictionary or Hangul pack";
+#elif HAS_STROKE_INPUT
+        const char *missing = "No stroke dictionary";
+#else
+        const char *missing = "No Hangul font pack";
+#endif
+        LOG_INFO("Input modes: %s", missing);
+        if (screen)
+            screen->showSimpleBanner(missing, 2000);
+    }
+    freetextChanged();
+    return true;
+#else
+    (void)event;
+    return false;
+#endif
+}
+
+// Stroke input (五笔画), in stroke mode (Alt+Space, handleInputModeKey): W E R S D (printed 1 to 5) type 横 竖 撇 点 折
+// and A (printed *) any stroke; the candidates show at the bottom of the screen. Space or Enter takes the first, Sym + 1
+// to 9 the others, Alt + left/right pages, backspace removes a stroke, Esc clears them. With no strokes typed, keys other
+// than the stroke keys type as usual (digits, punctuation, space)
 bool CannedMessageModule::handleStrokeInput(const InputEvent *event)
 {
 #if HAS_STROKE_INPUT
     namespace SI = graphics::StrokeInput;
-    if (event->kbchar == INPUT_BROKER_MSG_STROKE_MODE) {
-        if (!strokeMode && !SI::available()) {
-            LOG_INFO("Stroke input: no dictionary at %s", SI::kDictPath);
-            if (screen)
-                screen->showSimpleBanner("No stroke dictionary", 2000);
-            return true;
-        }
-        strokeMode = !strokeMode;
-        SI::reset();
-        freetextChanged();
-        return true;
-    }
     if (!strokeMode)
         return false;
 
@@ -1169,29 +1198,13 @@ bool CannedMessageModule::handleStrokeInput(const InputEvent *event)
 #endif
 }
 
-// Korean input (나랏글): Alt+Space switches the compose screen between letters and 한. The keys printed with a phone
-// keypad's digits type its 나랏글 keys: W E R (1 2 3) ㄱ ㄴ ㅏㅓ, S D F (4 5 6) ㄹ ㅁ ㅗㅜ, Z X C (7 8 9) ㅅ ㅇ ㅣ, A (*)
-// 획추가, mic (0) ㅡ, Q (#) 쌍자음. The syllable being composed stands at the cursor; space, punctuation, Enter and the
-// cursor keys finish it, backspace removes its last letter and Esc drops it. The other letters type nothing
+// Korean input (나랏글), in 한 mode (Alt+Space, handleInputModeKey): the keys printed with a phone keypad's digits type its
+// 나랏글 keys: W E R (1 2 3) ㄱ ㄴ ㅏㅓ, S D F (4 5 6) ㄹ ㅁ ㅗㅜ, Z X C (7 8 9) ㅅ ㅇ ㅣ, A (*) 획추가, mic (0) ㅡ, Q (#)
+// 쌍자음. The syllable being composed stands at the cursor; space, punctuation, Enter and the cursor keys finish it, backspace
+// removes its last letter and Esc drops it. The other letters type nothing
 bool CannedMessageModule::handleHangulInput(const InputEvent *event)
 {
 #if HAS_HANGUL_INPUT
-    if (event->kbchar == INPUT_BROKER_MSG_STROKE_MODE) {
-#if HAS_STROKE_INPUT
-        return false; // a build with both: Alt+Space stays the strokes' (not settled yet)
-#else
-        if (!hangulMode && !(graphics::FontPacks::hasGlyph(0xAC00) && graphics::FontPacks::hasGlyph(0x3131))) {
-            LOG_INFO("Korean input: no font pack with Hangul (가, ㄱ)");
-            if (screen)
-                screen->showSimpleBanner("No Hangul font pack", 2000);
-            return true;
-        }
-        hangulCommit();
-        hangulMode = !hangulMode;
-        freetextChanged();
-        return true;
-#endif
-    }
     if (!hangulMode)
         return false;
     // The text changed elsewhere (sent, cleared): nothing is being composed any more

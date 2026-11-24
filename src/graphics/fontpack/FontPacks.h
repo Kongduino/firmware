@@ -14,14 +14,14 @@
 #define HAS_FONTPACKS 0
 #endif
 
-// Input methods built on the font packs, each in a build of its own choosing: stroke input (五笔画, StrokeInput: the
-// default) and Korean (나랏글, hangul.h: -DFONTPACK_INPUT_HANGUL=1). A Korean build leaves the strokes out with
-// -DFONTPACK_INPUT_STROKES=0
+// Input methods built on the font packs: stroke input (五笔画, StrokeInput) and Korean (나랏글, hangul.h), both in every
+// build; each shows only when what it needs is installed. A board short of flash leaves one out with
+// -DFONTPACK_INPUT_STROKES=0 or -DFONTPACK_INPUT_HANGUL=0
 #ifndef FONTPACK_INPUT_STROKES
 #define FONTPACK_INPUT_STROKES 1
 #endif
 #ifndef FONTPACK_INPUT_HANGUL
-#define FONTPACK_INPUT_HANGUL 0
+#define FONTPACK_INPUT_HANGUL 1
 #endif
 #define HAS_STROKE_INPUT (HAS_FONTPACKS && FONTPACK_INPUT_STROKES)
 #define HAS_HANGUL_INPUT (HAS_FONTPACKS && FONTPACK_INPUT_HANGUL)

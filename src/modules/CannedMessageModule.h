@@ -197,6 +197,8 @@ class CannedMessageModule : public SinglePortModule, public Observable<const UIF
     bool handleMessageSelectorInput(const InputEvent *event, bool isUp, bool isDown, bool isSelect);
     bool handleFreeTextInput(const InputEvent *event);
 
+    bool handleInputModeKey(const InputEvent *event); // Alt+Space: letters, strokes, 한, as installed
+
     // === Stroke input (五笔画, with a stroke dictionary and font packs installed) ===
     bool strokeMode = false;                         // Alt+Space: keys type strokes, not letters
     bool handleStrokeInput(const InputEvent *event); // true when the event was a stroke-input key
