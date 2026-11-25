@@ -34,6 +34,7 @@ const char *const kPunctRow[] = {"，", "。", "？", "！", "、", "：", "；"
 } // namespace
 #endif
 
+#if HAS_HANGUL_INPUT
 namespace
 {
 // The Korean layout: the 나랏글 keys in hg_key order, three cells each, then column 9 (the mode key, punctuation)
@@ -45,6 +46,11 @@ const char *const kHangulKeysShort[3] = {"획", "ㅡ", "쌍"}; // the bottom row
 const char *const kHangulSide[4] = {"", ".", ",", "?"};     // under the mode key
 // Room kept in the text for what a key may finish and what stays composed
 constexpr size_t kHangulReserve = 3 * (HG_MAX_OUT + 2);
+} // namespace
+#endif
+
+namespace
+{
 // Screens this wide or wider (the T5 E-Paper's 960 px) keep the right column's labels this far from the edge: the
 // panel's frame hides the last pixels
 constexpr int kLargeScreenWidth = 480;
@@ -62,8 +68,8 @@ VirtualKeyboard::VirtualKeyboard() : cursorRow(0), cursorCol(0), lastActivityTim
 #endif
 #if HAS_HANGUL_INPUT
     hangulAvailable = FontPacks::hasGlyph(0xAC00) && FontPacks::hasGlyph(0x3131); // 가, ㄱ
-#endif
     hg_init(&hangul);
+#endif
 }
 
 VirtualKeyboard::~VirtualKeyboard() {}
@@ -236,6 +242,7 @@ void VirtualKeyboard::draw(OLEDDisplay *display, int16_t offsetX, int16_t offset
             int y = offsetY + keyboardStartY + row * cellH;
             int h = cellH;
             bool selected = cursorShown && row == cursorRow && col == cursorCol;
+#if HAS_HANGUL_INPUT
             if (hangulMode && !isLastCol) {
                 // Three cells per key, then the side column
                 if (col % kHangulKeyCols != 0 && col != kHangulSideCol)
@@ -246,7 +253,9 @@ void VirtualKeyboard::draw(OLEDDisplay *display, int16_t offsetX, int16_t offset
                 if (row == 3 && col < kHangulSideCol && textWidth(display, label) > w - 2)
                     label = kHangulKeysShort[col / kHangulKeyCols];
                 drawLabeledKey(display, label, false, selected, x, y, w, h, false);
-            } else if (strokeMode && !isLastCol) {
+            } else
+#endif
+                if (strokeMode && !isLastCol) {
                 std::string label = keyLabel(row, col);
                 if (!label.empty())
                     drawLabeledKey(display, label, false, selected, x, y, w, h, false);
@@ -827,8 +836,10 @@ bool VirtualKeyboard::tapAt(int16_t x, int16_t y, bool isLongPress)
 
     // A Korean key is three cells wide: any of them is the key. A cell with nothing drawn in it (no candidate there,
     // an empty letter slot) takes no press, but the tap is used
+#if HAS_HANGUL_INPUT
     if (hangulMode && col < kHangulSideCol)
         col -= col % kHangulKeyCols;
+#endif
     if (strokeMode && col < KEYBOARD_COLS - 1 && keyLabel(row, col).empty())
         return true;
     if (!hangulMode && !strokeMode && keyboard[row][col].character == 0 && keyboard[row][col].type == VK_CHAR)
@@ -887,11 +898,13 @@ std::string VirtualKeyboard::keyLabel(int row, int col)
 {
     if (col >= KEYBOARD_COLS - 1)
         return "";
+#if HAS_HANGUL_INPUT
     if (hangulMode) {
         if (col < kHangulSideCol)
             return kHangulKeys[row][col / kHangulKeyCols];
         return row == 0 ? modeLabel(nextMode(MODE_HANGUL)) : kHangulSide[row];
     }
+#endif
 #if HAS_STROKE_INPUT
     if (!strokeMode)
         return "";
@@ -1018,8 +1031,12 @@ void VirtualKeyboard::enterMode(InputMode mode)
     StrokeInput::reset();
 #endif
     candidatePage = 0;
+#if HAS_STROKE_INPUT
     strokeMode = mode == MODE_STROKES;
+#endif
+#if HAS_HANGUL_INPUT
     hangulMode = mode == MODE_HANGUL;
+#endif
     if (mode == MODE_LETTERS) {
         // On the mode key
         cursorRow = 2;
@@ -1059,6 +1076,7 @@ std::string VirtualKeyboard::shownText() const
 
 void VirtualKeyboard::stepHangulCursor(int direction)
 {
+#if HAS_HANGUL_INPUT
     // The keys' first cells, the side column, the action column; past the end, the next or previous row
     static const uint8_t cols[] = {0, 3, 6, kHangulSideCol, KEYBOARD_COLS - 1};
     const int n = sizeof(cols) / sizeof(cols[0]);
@@ -1074,6 +1092,9 @@ void VirtualKeyboard::stepHangulCursor(int direction)
         cursorRow = (cursorRow + KEYBOARD_ROWS - 1) % KEYBOARD_ROWS;
     }
     cursorCol = cols[i];
+#else
+    (void)direction;
+#endif
 }
 
 bool VirtualKeyboard::handleHangulPress(bool isLongPress)

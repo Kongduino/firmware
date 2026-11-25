@@ -1098,8 +1098,16 @@ bool CannedMessageModule::handleInputModeKey(const InputEvent *event)
 #endif
     const bool fromLetters = !strokeMode && !hangulMode;
     const bool fromStrokes = strokeMode;
-    strokeMode = fromLetters && strokesOk;
-    hangulMode = !strokeMode && (fromLetters || fromStrokes) && hangulOk;
+    const bool toStrokes = fromLetters && strokesOk;
+    const bool toHangul = !toStrokes && (fromLetters || fromStrokes) && hangulOk;
+#if HAS_STROKE_INPUT
+    strokeMode = toStrokes;
+#endif
+#if HAS_HANGUL_INPUT
+    hangulMode = toHangul;
+#else
+    (void)toHangul;
+#endif
     if (fromLetters && !strokeMode && !hangulMode) {
 #if HAS_STROKE_INPUT && HAS_HANGUL_INPUT
         const char *missing = "No stroke dictionary or Hangul pack";
@@ -1286,8 +1294,10 @@ void CannedMessageModule::hangulShow(const String &done)
 
 void CannedMessageModule::hangulCommit()
 {
+#if HAS_HANGUL_INPUT
     hg_init(&hangul);
     hangulShown = "";
+#endif
 }
 
 // The input mode, at the bottom of the compose screen

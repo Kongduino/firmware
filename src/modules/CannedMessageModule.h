@@ -1,6 +1,7 @@
 #pragma once
 #if HAS_SCREEN
 #include "ProtobufModule.h"
+#include "graphics/fontpack/FontPacks.h" // HAS_STROKE_INPUT, HAS_HANGUL_INPUT
 #include "graphics/fontpack/hangul.h"
 #include "input/InputBroker.h"
 
@@ -200,14 +201,22 @@ class CannedMessageModule : public SinglePortModule, public Observable<const UIF
     bool handleInputModeKey(const InputEvent *event); // Alt+Space: letters, strokes, 한, as installed
 
     // === Stroke input (五笔画, with a stroke dictionary and font packs installed) ===
-    bool strokeMode = false;                         // Alt+Space: keys type strokes, not letters
+#if HAS_STROKE_INPUT
+    bool strokeMode = false; // Alt+Space: keys type strokes, not letters
+#else
+    static constexpr bool strokeMode = false; // left out of the build (FONTPACK_INPUT_STROKES=0)
+#endif
     bool handleStrokeInput(const InputEvent *event); // true when the event was a stroke-input key
     void pickStrokeCandidate(int i);
     void drawStrokeInput(OLEDDisplay *display, int16_t x, int16_t y);
     void freetextChanged(); // redraws the compose screen after an edit
 
     // === Korean input (나랏글, with a Hangul font pack) ===
+#if HAS_HANGUL_INPUT
     bool hangulMode = false; // Alt+Space: the keys printed with the phone keypad's digits type 나랏글
+#else
+    static constexpr bool hangulMode = false; // left out of the build (FONTPACK_INPUT_HANGUL=0)
+#endif
     hg_state hangul{};
     String hangulShown;                              // the syllable being composed, as it stands before the cursor
     bool handleHangulInput(const InputEvent *event); // true when the event was a Korean-input key

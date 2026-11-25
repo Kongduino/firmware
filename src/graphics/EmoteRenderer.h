@@ -25,9 +25,15 @@ size_t utf8CharLen(uint8_t c);
 // The code point of the UTF-8 character at s (at most len bytes); no validation (0xFFFD for a truncated sequence)
 uint32_t utf8CodePoint(const char *s, size_t len);
 
-// True for the characters of scripts written without spaces (CJK, kana, Hangul, fullwidth forms): a line can break
-// before any of them
-bool canBreakBefore(uint32_t cp);
+// True when a line may break between two adjacent characters without a space between them (prev, then next): next to a
+// character of a script written without spaces (CJK, kana, Hangul, fullwidth forms), except where CJK line-breaking
+// rules (Japanese kinsoku) forbid it: after an opening bracket; before closing brackets, punctuation, small kana and
+// the long-vowel mark; inside a run of fullwidth digits and letters; before a variation selector or skin tone, which
+// belongs to the character before it. 0 for prev means no character before (no break)
+bool canBreakBetween(uint32_t prev, uint32_t next);
+
+// Variation selectors, skin tones and tags: they modify the character before them and draw nothing
+bool isInvisibleModifier(uint32_t cp);
 
 const Emote *findEmoteByLabel(const char *label, const Emote *emoteSet = emotes, int emoteCount = numEmotes);
 const Emote *findEmoteAt(const char *text, size_t textLen, size_t pos, size_t &matchLen, const Emote *emoteSet = emotes,

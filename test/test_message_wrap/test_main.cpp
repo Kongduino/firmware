@@ -9,6 +9,7 @@
 
 #if HAS_SCREEN
 
+#include "graphics/EmoteRenderer.h"
 #include "graphics/draw/MessageRenderer.h"
 #include "graphics/draw/UIRenderer.h"
 #include <OLEDDisplay.h>
@@ -176,6 +177,112 @@ void test_generateLines_truncatedLead_noOverread(void)
     TEST_ASSERT_EQUAL_STRING(content, lines[0].c_str());
 }
 
+// --- Line breaks in scripts written without spaces (CJK), with the CJK line-breaking rules (kinsoku) ---
+
+using graphics::EmoteRenderer::canBreakBetween;
+
+void test_canBreakBetween_cjk_characters(void)
+{
+    TEST_ASSERT_TRUE(canBreakBetween(0x65E5, 0x672C)); // 日|本
+    TEST_ASSERT_TRUE(canBreakBetween(0xAC00, 0xAC01)); // 가|각 (Hangul)
+    TEST_ASSERT_TRUE(canBreakBetween('a', 0x65E5));    // a|日
+    TEST_ASSERT_TRUE(canBreakBetween(0x65E5, 'a'));    // 日|a
+    TEST_ASSERT_TRUE(canBreakBetween(0x65E5, 0x300C)); // 日|「
+    TEST_ASSERT_FALSE(canBreakBetween('a', 'b'));      // Latin: only at spaces
+    TEST_ASSERT_FALSE(canBreakBetween(0, 0x65E5));     // nothing before
+}
+
+void test_canBreakBetween_noBreakBeforeClosingAndPunctuation(void)
+{
+    TEST_ASSERT_FALSE(canBreakBetween(0x65E5, 0x3002)); // 日。
+    TEST_ASSERT_FALSE(canBreakBetween(0x65E5, 0x3001)); // 日、
+    TEST_ASSERT_FALSE(canBreakBetween(0x4E2D, 0xFF0C)); // 中，(Chinese fullwidth comma)
+    TEST_ASSERT_FALSE(canBreakBetween(0x65E5, 0x300D)); // 日」
+    TEST_ASSERT_FALSE(canBreakBetween(0x65E5, 0xFF09)); // 日）
+    TEST_ASSERT_FALSE(canBreakBetween(0x65E5, '.'));
+    TEST_ASSERT_FALSE(canBreakBetween(0x65E5, ','));
+    TEST_ASSERT_FALSE(canBreakBetween(0x304B, 0x3063)); // か っ (small kana)
+    TEST_ASSERT_FALSE(canBreakBetween(0x30AB, 0x30FC)); // カ ー (long-vowel mark)
+    TEST_ASSERT_FALSE(canBreakBetween(0xFF76, 0xFF6F)); // ｶ ｯ (halfwidth small kana)
+}
+
+void test_canBreakBetween_noBreakAfterOpening(void)
+{
+    TEST_ASSERT_FALSE(canBreakBetween(0x300C, 0x65E5)); // 「日
+    TEST_ASSERT_FALSE(canBreakBetween(0xFF08, 0x65E5)); // （日
+    TEST_ASSERT_FALSE(canBreakBetween('(', 0x65E5));    // (日
+}
+
+void test_canBreakBetween_fullwidthAlnumRunsStayTogether(void)
+{
+    TEST_ASSERT_FALSE(canBreakBetween(0xFF11, 0xFF12)); // １２
+    TEST_ASSERT_FALSE(canBreakBetween(0xFF21, 0xFF42)); // Ａｂ
+    TEST_ASSERT_TRUE(canBreakBetween(0x65E5, 0xFF11));  // 日１
+    TEST_ASSERT_TRUE(canBreakBetween(0xFF11, 0x65E5));  // １日
+}
+
+void test_canBreakBetween_modifiersStayWithTheirCharacter(void)
+{
+    TEST_ASSERT_FALSE(canBreakBetween(0x65E5, 0xFE0F));  // variation selector 16
+    TEST_ASSERT_FALSE(canBreakBetween(0x65E5, 0xFE0E));  // variation selector 15
+    TEST_ASSERT_FALSE(canBreakBetween(0x65E5, 0x1F3FB)); // skin tone
+}
+
+static bool startsWith(const std::string &s, const char *prefix)
+{
+    return s.compare(0, strlen(prefix), prefix) == 0;
+}
+
+static bool endsWith(const std::string &s, const char *suffix)
+{
+    const size_t n = strlen(suffix);
+    return s.size() >= n && s.compare(s.size() - n, n, suffix) == 0;
+}
+
+// Wrapped at every width from three characters to wide: no line may start with closing punctuation, a small kana or a
+// variation selector, and none may end with an opening bracket. Narrower than the longest group the rules keep together
+// (ちょっ, three characters), a group that overflows a line on its own is still cut.
+void test_generateLines_cjk_kinsokuAtEveryWidth(void)
+{
+    FakeDisplay d;
+    const int narrowest = widthOf(d, "\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E"); // 日本語
+    const char *text =
+        "\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E\xE3\x81\xAE\xE3\x80\x8C\xE6\x96\x87\xE7\xAB\xA0\xE3\x80\x8D" // 日本語の「文章」
+        "\xE3\x81\xA7\xE3\x81\x99\xE3\x80\x82\xE3\x81\xA1\xE3\x82\x87\xE3\x81\xA3\xE3\x81\xA8"             // です。ちょっと
+        "\xE5\xBE\x85\xE3\x81\xA3\xE3\x81\xA6\xE3\x80\x81\xE6\x98\x9F\xEF\xB8\x8F\xE3\x81\x8C"             // 待って、星️が
+        "\xE8\xA6\x8B\xE3\x81\x88\xE3\x82\x8B\xEF\xBC\x81";                                                // 見える！
+    for (int width = narrowest; width <= narrowest + 160; width += 3) {
+        auto lines = generateLines(&d, "", text, width);
+        TEST_ASSERT_EQUAL_STRING(text, joined(lines).c_str());
+        for (size_t i = 1; i < lines.size(); ++i) {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "width %d, line %u", width, (unsigned)i);
+            const std::string &l = lines[i];
+            TEST_ASSERT_FALSE_MESSAGE(startsWith(l, "\xE3\x80\x82"), msg); // 。
+            TEST_ASSERT_FALSE_MESSAGE(startsWith(l, "\xE3\x80\x81"), msg); // 、
+            TEST_ASSERT_FALSE_MESSAGE(startsWith(l, "\xE3\x80\x8D"), msg); // 」
+            TEST_ASSERT_FALSE_MESSAGE(startsWith(l, "\xE3\x81\xA3"), msg); // っ
+            TEST_ASSERT_FALSE_MESSAGE(startsWith(l, "\xE3\x82\x87"), msg); // ょ
+            TEST_ASSERT_FALSE_MESSAGE(startsWith(l, "\xEF\xBC\x81"), msg); // ！
+            TEST_ASSERT_FALSE_MESSAGE(startsWith(l, "\xEF\xB8\x8F"), msg); // VS16
+        }
+        for (size_t i = 0; i + 1 < lines.size(); ++i)
+            TEST_ASSERT_FALSE(endsWith(lines[i], "\xE3\x80\x8C")); // 「
+    }
+}
+
+// A run of CJK wraps between its characters, not only where a character overflows the line.
+void test_generateLines_cjk_breaksBetweenCharacters(void)
+{
+    FakeDisplay d;
+    const char *text = "hello \xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E"; // hello 日本語日本語
+    const int width = widthOf(d, "hello \xE6\x97\xA5");
+    auto lines = generateLines(&d, "", text, width);
+    TEST_ASSERT_TRUE(lines.size() >= 2);
+    TEST_ASSERT_EQUAL_STRING("hello \xE6\x97\xA5", lines[0].c_str()); // the first character fills the first line
+    assertAllFit(d, lines, width);
+}
+
 void setup()
 {
     initializeTestEnvironment();
@@ -189,6 +296,13 @@ void setup()
     RUN_TEST(test_generateLines_newlines_preserved);
     RUN_TEST(test_generateLines_curlyApostrophe_becomesPlain);
     RUN_TEST(test_generateLines_truncatedLead_noOverread);
+    RUN_TEST(test_canBreakBetween_cjk_characters);
+    RUN_TEST(test_canBreakBetween_noBreakBeforeClosingAndPunctuation);
+    RUN_TEST(test_canBreakBetween_noBreakAfterOpening);
+    RUN_TEST(test_canBreakBetween_fullwidthAlnumRunsStayTogether);
+    RUN_TEST(test_canBreakBetween_modifiersStayWithTheirCharacter);
+    RUN_TEST(test_generateLines_cjk_kinsokuAtEveryWidth);
+    RUN_TEST(test_generateLines_cjk_breaksBetweenCharacters);
     exit(UNITY_END());
 }
 

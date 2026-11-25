@@ -66,7 +66,8 @@ uint32_t utf8CodePoint(const char *s, size_t len)
     return cp;
 }
 
-bool canBreakBefore(uint32_t cp)
+// Characters of scripts written without spaces: a line can break next to any of them (but see canBreakBetween)
+static bool isNoSpaceScript(uint32_t cp)
 {
     return (cp >= 0x2E80 && cp <= 0x9FFF) || // CJK radicals, punctuation, kana, Bopomofo, ideographs
            (cp >= 0xA960 && cp <= 0xA97F) || // Hangul jamo extended-A
@@ -75,6 +76,62 @@ bool canBreakBefore(uint32_t cp)
            (cp >= 0xFE30 && cp <= 0xFE4F) || // CJK compatibility forms
            (cp >= 0xFF00 && cp <= 0xFFEF) || // halfwidth and fullwidth forms
            (cp >= 0x20000 && cp <= 0x3FFFF); // CJK ideographs, supplementary planes
+}
+
+static bool isInList(uint32_t cp, const uint16_t *list, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (list[i] == cp)
+            return true;
+    }
+    return false;
+}
+
+// The line-breaking rules (kinsoku) and their lists are from meshtastic/firmware#12469 by mntszk (Japanese on OLED
+// displays); the same rules hold for Chinese.
+
+// Opening brackets and quotes: not at the end of a line
+static bool isNoBreakAfter(uint32_t cp)
+{
+    static const uint16_t OPENING[] = {'(',    '[',    0x2018, 0x201C, 0x3008, 0x300A, 0x300C, 0x300E,
+                                       0x3010, 0x3014, 0x3016, 0xFF08, 0xFF3B, 0xFF5B, 0xFF62};
+    return isInList(cp, OPENING, sizeof(OPENING) / sizeof(OPENING[0]));
+}
+
+// Closing brackets and quotes, punctuation, iteration marks, small kana and the long-vowel mark: not at the start of a
+// line
+static bool isNoBreakBefore(uint32_t cp)
+{
+    static const uint16_t CLOSING[] = {
+        '!', ')', ',', '.', ':', ';', '?', ']', 0x2019, 0x201D, 0x2025, 0x2026, 0x2030, 0x2103, 0x3001, 0x3002, 0x3005, 0x3009,
+        0x300B, 0x300D, 0x300F, 0x3011, 0x3015, 0x3017, 0x309B, 0x309C, 0x309D, 0x309E, 0x30FB, 0x30FC, 0x30FD, 0x30FE, 0xFF01,
+        0xFF05, 0xFF09, 0xFF0C, 0xFF0E, 0xFF1A, 0xFF1B, 0xFF1F, 0xFF3D, 0xFF5D, 0xFF61, 0xFF63, 0xFF64, 0xFF65, 0xFF70, 0xFF9E,
+        0xFF9F,
+        // Small kana
+        0x3041, 0x3043, 0x3045, 0x3047, 0x3049, 0x3063, 0x3083, 0x3085, 0x3087, 0x308E, 0x3095, 0x3096, 0x30A1, 0x30A3, 0x30A5,
+        0x30A7, 0x30A9, 0x30C3, 0x30E3, 0x30E5, 0x30E7, 0x30EE, 0x30F5, 0x30F6};
+    if (cp >= 0xFF67 && cp <= 0xFF6F) // halfwidth small kana
+        return true;
+    return isInList(cp, CLOSING, sizeof(CLOSING) / sizeof(CLOSING[0]));
+}
+
+static bool isFullwidthAlnum(uint32_t cp)
+{
+    return (cp >= 0xFF10 && cp <= 0xFF19) || (cp >= 0xFF21 && cp <= 0xFF3A) || (cp >= 0xFF41 && cp <= 0xFF5A);
+}
+
+bool isInvisibleModifier(uint32_t cp)
+{
+    return (cp >= 0xFE00 && cp <= 0xFE0F) || (cp >= 0x1F3FB && cp <= 0x1F3FF) || (cp >= 0xE0000 && cp <= 0xE01EF);
+}
+
+bool canBreakBetween(uint32_t prev, uint32_t next)
+{
+    if (prev == 0 || !(isNoSpaceScript(prev) || isNoSpaceScript(next)))
+        return false;
+    if (isInvisibleModifier(next) || isNoBreakAfter(prev) || isNoBreakBefore(next))
+        return false;
+    return !(isFullwidthAlnum(prev) && isFullwidthAlnum(next));
 }
 
 // Bytes the UTF-8 char at s[pos] occupies, clamped to what actually remains. A truncated multi-byte

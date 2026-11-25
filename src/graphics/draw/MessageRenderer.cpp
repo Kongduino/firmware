@@ -1048,18 +1048,14 @@ std::vector<std::string> generateLines(OLEDDisplay *display, const char *headerS
     const size_t len = strlen(messageBuf);
     std::string line, word;
     size_t pos = 0;
-    bool breakAfterWord = false; // the word is a character of a script written without spaces
+    uint32_t prevCp = 0; // the last visible character of the word, 0 after a space or a line end
     while (pos < len) {
         // Advance one whole unit (emote or UTF-8 char) so a break never lands inside one
         size_t unitLen = 0;
         if ((unsigned char)messageBuf[pos] == 0xE2 && (unsigned char)messageBuf[pos + 1] == 0x80 &&
             (unsigned char)messageBuf[pos + 2] == 0x99) {
-            if (breakAfterWord) {
-                line += word;
-                word.clear();
-                breakAfterWord = false;
-            }
-            word += '\''; // U+2019 right single quote -> plain apostrophe
+            prevCp = 0x2019; // a closing quote: never a break before it
+            word += '\'';    // U+2019 right single quote -> plain apostrophe
             pos += 3;
             unitLen = 1;
         } else {
@@ -1068,25 +1064,27 @@ std::vector<std::string> generateLines(OLEDDisplay *display, const char *headerS
                 line += word;
                 pushLine(line);
                 word.clear();
+                prevCp = 0;
                 ++pos;
                 continue;
             }
             if (ch == ' ') {
                 line += word + ' ';
                 word.clear();
+                prevCp = 0;
                 ++pos;
                 continue;
             }
             if (!graphics::EmoteRenderer::findEmoteAt(messageBuf, len, pos, unitLen))
                 unitLen = std::min(graphics::EmoteRenderer::utf8CharLen((uint8_t)ch), len - pos);
-            // Scripts written without spaces (CJK): a line can break before and after each of their characters
-            const bool breakable =
-                graphics::EmoteRenderer::canBreakBefore(graphics::EmoteRenderer::utf8CodePoint(messageBuf + pos, unitLen));
-            if (breakable || breakAfterWord) {
+            // Scripts written without spaces (CJK): a line can break between characters, as their rules allow
+            const uint32_t cp = graphics::EmoteRenderer::utf8CodePoint(messageBuf + pos, unitLen);
+            if (graphics::EmoteRenderer::canBreakBetween(prevCp, cp)) {
                 line += word;
                 word.clear();
             }
-            breakAfterWord = breakable;
+            if (!graphics::EmoteRenderer::isInvisibleModifier(cp))
+                prevCp = cp;
             word.append(messageBuf + pos, unitLen);
             pos += unitLen;
         }

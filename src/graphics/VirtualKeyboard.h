@@ -1,7 +1,10 @@
 #pragma once
 
 #include "configuration.h"
+#include "graphics/fontpack/FontPacks.h" // HAS_STROKE_INPUT, HAS_HANGUL_INPUT
+#if HAS_HANGUL_INPUT
 #include "graphics/fontpack/hangul.h"
+#endif
 #include <OLEDDisplay.h>
 #include <functional>
 #include <string>
@@ -106,8 +109,14 @@ class VirtualKeyboard
     // Stroke input (五笔画), with a stroke dictionary and font packs installed. As on a phone's stroke keypad, the strokes
     // and the wildcard make a 3 x 2 pad on the left, with the candidate pages and the mode key under it; three rows of
     // seven candidates beside it, and a row of CJK punctuation at the bottom
+#if HAS_STROKE_INPUT
     bool strokesAvailable = false;
     bool strokeMode = false;
+#else
+    // Left out of the build (FONTPACK_INPUT_STROKES=0): the stroke layout's code is dropped as never used
+    static constexpr bool strokesAvailable = false;
+    static constexpr bool strokeMode = false;
+#endif
     int candidatePage = 0; // pages of kCandidatesPerPage
 
     bool handleStrokePress(bool isLongPress); // true when the stroke layout took the press
@@ -117,9 +126,15 @@ class VirtualKeyboard
     // Korean (나랏글), with a pack that has Hangul: the phone's 12 keys, three cells wide (ㄱ ㄴ ㅏㅓ / ㄹ ㅁ ㅗㅜ / ㅅ ㅇ ㅣ /
     // 획추가 ㅡ 쌍자음), then a column with the mode key and punctuation. The syllable being composed is shown at the end
     // of the text, and finished by a space, ENTER, punctuation or the mode key
+#if HAS_HANGUL_INPUT
     bool hangulAvailable = false;
     bool hangulMode = false;
     hg_state hangul{};
+#else
+    // Left out of the build (FONTPACK_INPUT_HANGUL=0): the Korean layout's code is dropped as never used
+    static constexpr bool hangulAvailable = false;
+    static constexpr bool hangulMode = false;
+#endif
 
     bool handleHangulPress(bool isLongPress); // true when the Korean layout took the press
     void commitHangul();                      // the syllable being composed goes into the text
