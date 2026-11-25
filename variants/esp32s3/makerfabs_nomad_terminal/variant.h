@@ -73,7 +73,16 @@
 #define HAS_TOUCHSCREEN 1
 #define SCREEN_TOUCH_INT 41
 #define ENABLE_TOUCH_INT
+// LovyanGFX puts the FT6236 in polling mode: INT stays low while a finger is down, so the interrupt times each press
+// and release (a redraw of this screen keeps the touch thread waiting long enough to turn taps into long presses)
+#define TOUCH_INT_LEVEL
 #define SCREEN_TOUCH_RST 42
 #define TOUCH_I2C_PORT 0
 #define TOUCH_SLAVE_ADDRESS 0x38
+// BaseUI (font packs): taps type on the on-screen keyboard, with stroke or Korean input, instead of the touch QWERTY.
+// The MUI build (HAS_TFT) keeps its own keyboard
+#if !defined(HAS_TFT) || !HAS_TFT
+#define TOUCH_ON_SCREEN_KEYBOARD 1
+#else
 #define USE_VIRTUAL_KEYBOARD 1
+#endif
